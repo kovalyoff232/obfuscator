@@ -8,7 +8,6 @@ import (
 	"strconv"
 )
 
-// InsertDeadCode обходит AST и вставляет "мертвый" код в тела функций.
 func InsertDeadCode(node *ast.File) {
 	ast.Inspect(node, func(n ast.Node) bool {
 		block, ok := n.(*ast.BlockStmt)
@@ -16,7 +15,6 @@ func InsertDeadCode(node *ast.File) {
 			return true
 		}
 
-		// Проверяем, есть ли в блоке `return`.
 		hasReturn := false
 		for _, stmt := range block.List {
 			if _, ok := stmt.(*ast.ReturnStmt); ok {
@@ -25,14 +23,11 @@ func InsertDeadCode(node *ast.File) {
 			}
 		}
 
-		// Если в блоке есть `return`, мы не можем безопасно добавить код в конец.
-		// В реальном проекте потребовался бы более сложный анализ,
-		// но для данного случая мы просто пропустим этот блок.
 		if hasReturn {
 			return true
 		}
 
-		if rand.Intn(100) < 30 { // 30% шанс
+		if rand.Intn(100) < 30 { // 30% chance
 			block.List = append(block.List, createDeadIfStmt())
 		}
 
@@ -40,18 +35,14 @@ func InsertDeadCode(node *ast.File) {
 	})
 }
 
-// createDeadIfStmt создает `if false { ... }` блок с мусорным кодом,
-// который не вызывает ошибок "declared and not used".
 func createDeadIfStmt() ast.Stmt {
 	varName1 := fmt.Sprintf("o_dead_%d", rand.Intn(1000))
 	varName2 := fmt.Sprintf("o_dead_%d", rand.Intn(1000)+1000)
 
-	// Cоздаем `if false { ... }`
 	return &ast.IfStmt{
 		Cond: &ast.Ident{Name: "false"},
 		Body: &ast.BlockStmt{
 			List: []ast.Stmt{
-				// var o_dead_1 = 123
 				&ast.DeclStmt{
 					Decl: &ast.GenDecl{
 						Tok: token.VAR,
@@ -63,7 +54,6 @@ func createDeadIfStmt() ast.Stmt {
 						},
 					},
 				},
-				// o_dead_2 := o_dead_1 + 1
 				&ast.AssignStmt{
 					Lhs: []ast.Expr{ast.NewIdent(varName2)},
 					Tok: token.DEFINE,
@@ -75,7 +65,6 @@ func createDeadIfStmt() ast.Stmt {
 						},
 					},
 				},
-				// _ = o_dead_2 (используем переменную, чтобы компилятор был доволен)
 				&ast.AssignStmt{
 					Lhs: []ast.Expr{ast.NewIdent("_")},
 					Tok: token.ASSIGN,

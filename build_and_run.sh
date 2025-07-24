@@ -8,28 +8,8 @@ if [ $? -ne 0 ]; then
 fi
 echo "Сборка завершена."
 
-echo -e "\nПодготовка тестового исходного кода..."
-mkdir -p ./example_src/pkg
-cat > ./example_src/main.go << EOL
-package main
-
-import "fmt"
-
-func main() {
-	secretMessage := "Это секретное сообщение"
-	result := add(10, 20)
-	fmt.Printf("%s: %d\n", secretMessage, result)
-}
-
-func add(a, b int) int {
-	return a + b
-}
-EOL
-
-echo "Тестовый код создан."
-
 echo -e "\nЗапуск обфускатора..."
-./obfuscator_cli -input ./example_src -output ./obfuscated_src
+./obfuscator_cli -input ./example_src/kvstore -output ./obfuscated_src
 if [ $? -ne 0 ]; then
     echo "Ошибка выполнения обфускатора."
     exit 1
@@ -40,6 +20,12 @@ echo -e "\nСодержимое обфусцированного файла (obf
 cat ./obfuscated_src/main.go
 
 echo -e "\n\nПопытка собрать и запустить обфусцированный код..."
+# Сначала удалим старую базу данных, если она есть
+rm -f ./kvstore.db
+rm -f ./obfuscated_src/kvstore.db
+
+# Собираем и запускаем с командой 'set'
+echo "Тест 1: Установка значения"
 go build -o ./obfuscated_src/obfuscated_payload ./obfuscated_src/main.go
 if [ $? -ne 0 ]; then
     echo "Ошибка сборки обфусцированного кода."
@@ -47,9 +33,20 @@ if [ $? -ne 0 ]; then
 fi
 echo "Обфусцированный код успешно собран."
 
-./obfuscated_src/obfuscated_payload
+./obfuscated_src/obfuscated_payload set mykey 'my secret value'
 if [ $? -ne 0 ]; then
-    echo "Ошибка запуска обфусцированного кода."
+    echo "Ошибка запуска обфусцированного кода (set)."
+    exit 1
+fi
+
+# Перемещаем базу данных для следующего запуска
+# mv ./kvstore.db ./obfuscated_src/
+
+# Запускаем с командой 'get'
+echo -e "\nТест 2: Получение значения"
+./obfuscated_src/obfuscated_payload get mykey
+if [ $? -ne 0 ]; then
+    echo "Ошибка запуска обфусцированного кода (get)."
     exit 1
 fi
 

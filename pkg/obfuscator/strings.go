@@ -13,7 +13,6 @@ import (
 
 const decryptFuncName = "o_d"
 
-// xorEncrypt остается без изменений.
 func xorEncrypt(data []byte, key byte) []byte {
 	result := make([]byte, len(data))
 	for i, b := range data {
@@ -22,12 +21,10 @@ func xorEncrypt(data []byte, key byte) []byte {
 	return result
 }
 
-// EncryptStrings - новая, полиморфная версия.
 func EncryptStrings(file *ast.File) error {
 	rand.Seed(time.Now().UnixNano())
 
-	// 1. Генерируем "осколки" ключа и их объявления.
-	numParts := 3 // Количество частей, из которых будет состоять ключ.
+	numParts := 3
 	keyParts := make([]byte, numParts)
 	keyPartNames := make([]string, numParts)
 	var keyPartDecls []ast.Decl
@@ -48,10 +45,8 @@ func EncryptStrings(file *ast.File) error {
 		keyPartDecls = append(keyPartDecls, decl)
 	}
 
-	// 2. Генерируем полиморфную формулу и вычисляем итоговый ключ.
 	operators := []token.Token{token.ADD, token.SUB, token.XOR}
 	
-	// Собираем формулу в виде AST
 	formula := ast.Expr(ast.NewIdent(keyPartNames[0]))
 	finalKey := keyParts[0]
 
@@ -72,15 +67,27 @@ func EncryptStrings(file *ast.File) error {
 		}
 	}
 
-	// 3. Ищем и заменяем строки, используя `finalKey`.
 	hasEncryptedStrings := false
 	astutil.Apply(file, func(cursor *astutil.Cursor) bool {
 		lit, ok := cursor.Node().(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING { return true }
-		if _, ok := cursor.Parent().(*ast.ImportSpec); ok { return true }
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+
+		if _, ok := cursor.Parent().(*ast.ImportSpec); ok {
+			return true
+		}
+
+		if field, ok := cursor.Parent().(*ast.Field); ok {
+			if field.Tag == lit {
+				return true
+			}
+		}
 
 		originalString, err := strconv.Unquote(lit.Value)
-		if err != nil || originalString == "" { return true }
+		if err != nil || originalString == "" {
+			return true
+		}
 
 		hasEncryptedStrings = true
 		encryptedBytes := xorEncrypt([]byte(originalString), finalKey)
@@ -107,9 +114,7 @@ func EncryptStrings(file *ast.File) error {
 		return true
 	}, nil)
 
-	// 4. Если нужно, внедряем глобальные переменные и новую функцию-дешифратор.
 	if hasEncryptedStrings {
-		// Создаем функцию-дешифратор программно
 		decryptFunc := &ast.FuncDecl{
 			Name: ast.NewIdent(decryptFuncName),
 			Type: &ast.FuncType{
@@ -122,7 +127,6 @@ func EncryptStrings(file *ast.File) error {
 			},
 			Body: &ast.BlockStmt{
 				List: []ast.Stmt{
-					// key := (o_k_0 + o_k_1) ^ o_k_2
 					&ast.AssignStmt{
 						Lhs: []ast.Expr{ast.NewIdent("key")},
 						Tok: token.DEFINE,
@@ -131,7 +135,6 @@ func EncryptStrings(file *ast.File) error {
 							Args: []ast.Expr{&ast.ParenExpr{X: formula}},
 						}},
 					},
-					// decrypted := make([]byte, len(data))
 					&ast.AssignStmt{
 						Lhs: []ast.Expr{ast.NewIdent("decrypted")},
 						Tok: token.DEFINE,
@@ -143,7 +146,6 @@ func EncryptStrings(file *ast.File) error {
 							},
 						}},
 					},
-					// for i, b := range data { ... }
 					&ast.RangeStmt{
 						Key:   ast.NewIdent("i"),
 						Value: ast.NewIdent("b"),
@@ -157,7 +159,6 @@ func EncryptStrings(file *ast.File) error {
 							},
 						}},
 					},
-					// return string(decrypted)
 					&ast.ReturnStmt{Results: []ast.Expr{
 						&ast.CallExpr{Fun: ast.NewIdent("string"), Args: []ast.Expr{ast.NewIdent("decrypted")}},
 					}},
@@ -165,7 +166,6 @@ func EncryptStrings(file *ast.File) error {
 			},
 		}
 		
-		// Вставляем глобальные переменные и функцию в начало файла (после импортов).
 		declsToInsert := append(keyPartDecls, decryptFunc)
 		file.Decls = append(file.Decls[:len(file.Imports)], append(declsToInsert, file.Decls[len(file.Imports):]...)...)
 	}

@@ -18,6 +18,7 @@
 /example_src/
 /obfuscator_cli
 .env
+kvstore.db
 
 # IDE settings
 .idea/
