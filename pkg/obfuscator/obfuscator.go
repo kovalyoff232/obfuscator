@@ -14,7 +14,7 @@ import (
 
 // Pass represents a syntax-only obfuscation pass that runs on a single file.
 type Pass interface {
-	Apply(file *ast.File) error
+	Apply(fset *token.FileSet, file *ast.File) error
 }
 
 // TypeAwarePass represents a semantic obfuscation pass that requires type info for the whole package.
@@ -26,14 +26,14 @@ type TypeAwarePass interface {
 
 type stringEncryptionPass struct{}
 
-func (p *stringEncryptionPass) Apply(file *ast.File) error {
+func (p *stringEncryptionPass) Apply(fset *token.FileSet, file *ast.File) error {
 	fmt.Println("  - Encrypting strings...")
-	return EncryptStrings(file)
+	return EncryptStrings(fset, file)
 }
 
 type renamePass struct{}
 
-func (p *renamePass) Apply(file *ast.File) error {
+func (p *renamePass) Apply(fset *token.FileSet, file *ast.File) error {
 	fmt.Println("  - Renaming identifiers...")
 	RenameIdentifiers(file)
 	return nil
@@ -41,7 +41,7 @@ func (p *renamePass) Apply(file *ast.File) error {
 
 type deadCodePass struct{}
 
-func (p *deadCodePass) Apply(file *ast.File) error {
+func (p *deadCodePass) Apply(fset *token.FileSet, file *ast.File) error {
 	fmt.Println("  - Inserting junk code...")
 	InsertDeadCode(file)
 	return nil
@@ -49,7 +49,7 @@ func (p *deadCodePass) Apply(file *ast.File) error {
 
 type controlFlowPass struct{}
 
-func (p *controlFlowPass) Apply(file *ast.File) error {
+func (p *controlFlowPass) Apply(fset *token.FileSet, file *ast.File) error {
 	fmt.Println("  - Obfuscating control flow...")
 	ObfuscateControlFlow(file)
 	return nil
@@ -57,7 +57,7 @@ func (p *controlFlowPass) Apply(file *ast.File) error {
 
 type expressionPass struct{}
 
-func (p *expressionPass) Apply(file *ast.File) error {
+func (p *expressionPass) Apply(fset *token.FileSet, file *ast.File) error {
 	fmt.Println("  - Obfuscating expressions...")
 	ObfuscateExpressions(file)
 	return nil
@@ -155,7 +155,7 @@ func ProcessDirectory(inputPath, outputPath string, cfg *Config) error {
 
 			fmt.Printf("Processing file: %s\n", filePath)
 			for _, pass := range obfuscator.syntaxPasses {
-				if err := pass.Apply(fileNode); err != nil {
+				if err := pass.Apply(fset, fileNode); err != nil {
 					return fmt.Errorf("error in syntax pass for file %s: %w", filePath, err)
 				}
 			}

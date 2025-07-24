@@ -9,17 +9,21 @@ import (
 	"testing"
 )
 
-func TestXorEncrypt(t *testing.T) {
+func TestEncryptBytes(t *testing.T) {
 	originalData := []byte("hello, world!")
 	key := byte(0xAB)
 
-	encryptedData := xorEncrypt(originalData, key)
+	encryptedData := encryptBytes(originalData, key)
 
 	if bytes.Equal(originalData, encryptedData) {
 		t.Errorf("Encrypted data should not be the same as original data")
 	}
 
-	decryptedData := xorEncrypt(encryptedData, key)
+	// Manually decrypt to test logic
+	decryptedData := make([]byte, len(encryptedData))
+	for i, b := range encryptedData {
+		decryptedData[i] = (b - key) ^ key
+	}
 
 	if !bytes.Equal(originalData, decryptedData) {
 		t.Errorf("Decrypted data does not match original data. Got %q, want %q", decryptedData, originalData)
@@ -42,7 +46,7 @@ func main() {
 		t.Fatalf("Failed to parse source: %v", err)
 	}
 
-	if err := EncryptStrings(file); err != nil {
+	if err := EncryptStrings(fset, file); err != nil {
 		t.Fatalf("EncryptStrings failed: %v", err)
 	}
 
@@ -88,7 +92,7 @@ func main() {
 		t.Fatalf("Failed to parse source: %v", err)
 	}
 
-	if err := EncryptStrings(file); err != nil {
+	if err := EncryptStrings(fset, file); err != nil {
 		t.Fatalf("EncryptStrings failed: %v", err)
 	}
 
