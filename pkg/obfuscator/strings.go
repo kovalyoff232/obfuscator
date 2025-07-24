@@ -129,8 +129,43 @@ func EncryptStrings(file *ast.File) error {
 		}
 
 		// Inject the decrypt function at the top level of the file, after imports
+		// Obfuscate the decryption function itself before injecting
+		obfuscateDecryptFunc(decryptFunc)
 		file.Decls = append(file.Decls[:len(file.Imports)], append([]ast.Decl{decryptFunc}, file.Decls[len(file.Imports):]...)...)
 	}
 
 	return nil
+}
+
+// obfuscateDecryptFunc adds junk code to the decryption function to make it harder to analyze.
+func obfuscateDecryptFunc(f *ast.FuncDecl) {
+	// Example of junk code: a switch statement that does nothing.
+	junkSwitch := &ast.SwitchStmt{
+		Body: &ast.BlockStmt{
+			List: []ast.Stmt{
+				&ast.CaseClause{
+					Body: []ast.Stmt{
+						// Empty body, or could contain more junk
+					},
+				},
+			},
+		},
+	}
+
+	// Another example: an if statement that is always true
+	junkIf := &ast.IfStmt{
+		Cond: &ast.BasicLit{Kind: token.INT, Value: "1 == 1"}, // A tautology
+		Body: &ast.BlockStmt{
+			List: []ast.Stmt{
+				&ast.AssignStmt{
+					Lhs: []ast.Expr{ast.NewIdent("_")},
+					Tok: token.ASSIGN,
+					Rhs: []ast.Expr{&ast.BasicLit{Kind: token.STRING, Value: `"junk"`}},
+				},
+			},
+		},
+	}
+
+	// Prepend the junk code to the function body
+	f.Body.List = append([]ast.Stmt{junkSwitch, junkIf}, f.Body.List...)
 }

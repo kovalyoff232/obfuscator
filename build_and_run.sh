@@ -1,7 +1,7 @@
 #!/bin/bash
 
 echo "Сборка проекта..."
-go build -o obfuscator_cli .
+go build -ldflags="-s -w" -o obfuscator_cli .
 if [ $? -ne 0 ]; then
     echo "Ошибка сборки."
     exit 1
@@ -26,7 +26,7 @@ rm -f ./obfuscated_src/kvstore.db
 
 # Собираем и запускаем с командой 'set'
 echo "Тест 1: Установка значения"
-go build -o ./obfuscated_src/obfuscated_payload ./obfuscated_src/main.go
+go build -ldflags="-s -w" -o ./obfuscated_src/obfuscated_payload ./obfuscated_src/main.go
 if [ $? -ne 0 ]; then
     echo "Ошибка сборки обфусцированного кода."
     exit 1
