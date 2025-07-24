@@ -10,8 +10,18 @@ import (
 	"strings"
 )
 
+
+// Config определяет, какие техники обфускации будут применены.
+type Config struct {
+	RenameIdentifiers      bool
+	EncryptStrings         bool
+	InsertDeadCode         bool
+	ObfuscateControlFlow   bool
+	ObfuscateExpressions   bool
+}
+
 // ProcessDirectory обходит директорию, читает .go файлы и применяет обфускацию.
-func ProcessDirectory(inputPath, outputPath string) error {
+func ProcessDirectory(inputPath, outputPath string, cfg *Config) error {
 	// Очищаем и создаем выходную директорию
 	if err := os.RemoveAll(outputPath); err != nil {
 		return fmt.Errorf("не удалось очистить выходную директорию: %w", err)
@@ -47,14 +57,36 @@ func ProcessDirectory(inputPath, outputPath string) error {
 			return fmt.Errorf("ошибка парсинга файла %s: %w", path, err)
 		}
 
-		// Применяем рабочие слои обфускации
-		RenameIdentifiers(node)
-		
-		if err := EncryptStrings(node); err != nil {
-			return fmt.Errorf("ошибка шифрования строк в %s: %w", path, err)
+		// Применяем все слои обфускации в соответствии с конфигурацией
+		if cfg.RenameIdentifiers {
+			fmt.Println("  - Переименование идентификаторов...")
+			RenameIdentifiers(node)
+		}
+
+		if cfg.EncryptStrings {
+			fmt.Println("  - Шифрование строк...")
+			if err := EncryptStrings(node); err != nil {
+				return fmt.Errorf("ошибка шифрования строк в %s: %w", path, err)
+			}
+		}
+
+		if cfg.InsertDeadCode {
+			fmt.Println("  - Вставка мусорного кода...")
+			InsertDeadCode(node)
+		}
+
+		if cfg.ObfuscateControlFlow {
+			fmt.Println("  - Обфускация потока управления...")
+			ObfuscateControlFlow(node)
+		}
+
+		if cfg.ObfuscateExpressions {
+			fmt.Println("  - Обфускация выражений...")
+			ObfuscateExpressions(node)
 		}
 
 		// Записываем измененное AST в новый файл
+		fmt.Println("  - Запись результата...")
 		outputFile, err := os.Create(targetPath)
 		if err != nil {
 			return fmt.Errorf("не удалось создать выходной файл %s: %w", targetPath, err)
