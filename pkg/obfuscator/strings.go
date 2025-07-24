@@ -63,6 +63,9 @@ func EncryptStrings(fset *token.FileSet, file *ast.File) error {
 			for _, pnode := range path {
 				if genDecl, ok := pnode.(*ast.GenDecl); ok && genDecl.Tok == token.CONST {
 					genDecl.Tok = token.VAR
+					// We must clear the comment on the declaration, otherwise it might
+					// be moved to a place that breaks the syntax.
+					genDecl.Doc = nil
 					break
 				}
 			}
