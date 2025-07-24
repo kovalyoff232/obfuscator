@@ -54,9 +54,11 @@ func (p *deadCodePass) Apply(fset *token.FileSet, file *ast.File) error {
 
 type controlFlowPass struct{}
 
-func (p *controlFlowPass) Apply(fset *token.FileSet, file *ast.File) error {
+func (p *controlFlowPass) Apply(pkg *packages.Package) error {
 	fmt.Println("  - Obfuscating control flow...")
-	ControlFlow(file)
+	for _, file := range pkg.Syntax {
+		ControlFlow(file, pkg.TypesInfo)
+	}
 	return nil
 }
 
@@ -133,7 +135,7 @@ func NewObfuscator(cfg *Config) *Obfuscator {
 		syntaxPasses = append(syntaxPasses, &deadCodePass{})
 	}
 	if cfg.ObfuscateControlFlow {
-		syntaxPasses = append(syntaxPasses, &controlFlowPass{})
+		typeAwarePasses = append(typeAwarePasses, &controlFlowPass{})
 	}
 	// Call indirection should run after most other syntax passes, so the dispatcher itself gets obfuscated.
 	if cfg.IndirectCalls {
