@@ -15,6 +15,7 @@
 /payload_clear
 /payload_final
 /obfuscated_src/
+.env
 
 # IDE settings
 .idea/
