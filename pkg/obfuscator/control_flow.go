@@ -9,89 +9,122 @@ import (
 	"golang.org/x/tools/go/ast/astutil"
 )
 
-func ObfuscateControlFlow(node *ast.File) {
-	astutil.Apply(node, func(cursor *astutil.Cursor) bool {
-		block, ok := cursor.Node().(*ast.BlockStmt)
-		if !ok || len(block.List) < 1 {
+// ControlFlow flattens the control flow of function bodies.
+// It breaks down a function's body into basic blocks and places them
+// inside a single loop with a switch statement that dictates the flow of execution.
+func ControlFlow(f *ast.File) {
+	astutil.Apply(f, func(cursor *astutil.Cursor) bool {
+		// We are looking for function declarations
+		funcDecl, ok := cursor.Node().(*ast.FuncDecl)
+		if !ok || funcDecl.Body == nil || len(funcDecl.Body.List) == 0 {
 			return true
 		}
 
-		if parent := cursor.Parent(); parent != nil {
-			if _, ok := parent.(*ast.CaseClause); ok {
-				return true
-			}
-			if sw, ok := parent.(*ast.SwitchStmt); ok && sw.Body == block {
-				return true
-			}
+		// Skip functions that are too small to be worth flattening
+		if len(funcDecl.Body.List) < 2 {
+			return true
 		}
 
-		// Check if the block contains a return statement. If so, skipping it to avoid "missing return" errors.
-		for _, stmt := range block.List {
-			if _, ok := stmt.(*ast.ReturnStmt); ok {
-				return true
+		// Skip functions with return statements that might cause "missing return" errors
+		// A more sophisticated analysis would be needed to handle these correctly.
+		hasReturn := false
+		ast.Inspect(funcDecl.Body, func(n ast.Node) bool {
+			if _, ok := n.(*ast.ReturnStmt); ok {
+				hasReturn = true
 			}
+			return !hasReturn
+		})
+		if hasReturn {
+			return true
 		}
 
-		if rand.Intn(100) < 30 { // 30% chance
-			newStmts := createOpaqueSwitch(block.List)
-			block.List = newStmts
-		}
+		flattenedBody := flattenFuncBody(funcDecl.Body)
+		funcDecl.Body = flattenedBody
 
-		return true
+		// We handled this function, no need to inspect its children further
+		return false
 	}, nil)
 }
 
-func createOpaqueSwitch(stmts []ast.Stmt) []ast.Stmt {
-	ctrlVarName := "o_ctrl_" + strconv.Itoa(rand.Intn(1000))
+// flattenFuncBody takes a block statement (a function body) and applies control flow flattening.
+func flattenFuncBody(body *ast.BlockStmt) *ast.BlockStmt {
+	// The control variable for the switch statement
+	ctrlVarName := "o_ctrl_flow_" + strconv.Itoa(rand.Intn(10000))
+	ctrlVar := ast.NewIdent(ctrlVarName)
 
-	// This variable will always be 0, making the switch predictable but opaque.
-	initCtrlVar := &ast.AssignStmt{
-		Lhs: []ast.Expr{ast.NewIdent(ctrlVarName)},
-		Tok: token.DEFINE,
-		Rhs: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "0"}},
-	}
-
-	// The default case holds the original, real code.
-	defaultCase := &ast.CaseClause{
-		List: nil, // Represents the 'default' case
-		Body: stmts,
-	}
-
-	// Create several junk cases that will never be executed.
-	junkCases := []ast.Stmt{}
-	numJunkCases := rand.Intn(3) + 1 // 1 to 3 junk cases
-	for i := 0; i < numJunkCases; i++ {
-		deadVarName := "o_dead_" + strconv.Itoa(rand.Intn(1000))
-		junkCases = append(junkCases, &ast.CaseClause{
-			List: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(i + 1)}}, // Cases 1, 2, 3...
-			Body: []ast.Stmt{
-				// Add some dead code inside the junk case to make it look real.
-				&ast.AssignStmt{
-					Lhs: []ast.Expr{ast.NewIdent(deadVarName)},
-					Tok: token.DEFINE,
-					Rhs: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(rand.Intn(100))}},
-				},
-				// "Use" the variable to avoid "declared and not used" error.
-				&ast.AssignStmt{
-					Lhs: []ast.Expr{ast.NewIdent("_")},
-					Tok: token.ASSIGN,
-					Rhs: []ast.Expr{ast.NewIdent(deadVarName)},
+	// 1. Initialize the control variable: var o_ctrl_flow_XXX = 0
+	initStmt := &ast.DeclStmt{
+		Decl: &ast.GenDecl{
+			Tok: token.VAR,
+			Specs: []ast.Spec{
+				&ast.ValueSpec{
+					Names:  []*ast.Ident{ctrlVar},
+					Values: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "0"}},
 				},
 			},
-		})
-	}
-	
-	// Add the default case to the list of cases.
-	allCases := append(junkCases, defaultCase)
-
-
-	switchStmt := &ast.SwitchStmt{
-		Tag: ast.NewIdent(ctrlVarName),
-		Body: &ast.BlockStmt{
-			List: allCases,
 		},
 	}
 
-	return []ast.Stmt{initCtrlVar, switchStmt}
-}
+	// 2. Create the list of cases for the switch. Each statement becomes a case.
+	var cases []ast.Stmt
+	numStmts := len(body.List)
+	for i, stmt := range body.List {
+		// The body of the case contains the original statement
+		caseBody := []ast.Stmt{stmt}
 
+		// After the statement, update the control variable to point to the next block
+		nextState := i + 1
+		if nextState >= numStmts {
+			// If this is the last statement, set state to -1 to break the loop
+			nextState = -1
+		}
+
+		updateCtrlVar := &ast.AssignStmt{
+			Lhs: []ast.Expr{ctrlVar},
+			Tok: token.ASSIGN,
+			Rhs: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(nextState)}},
+		}
+		caseBody = append(caseBody, updateCtrlVar)
+
+		// Create the case clause: case i: ...
+		clause := &ast.CaseClause{
+			List: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(i)}},
+			Body: caseBody,
+		}
+		cases = append(cases, clause)
+	}
+
+	// 3. Create the main switch statement
+	switchStmt := &ast.SwitchStmt{
+		Tag:  ctrlVar,
+		Body: &ast.BlockStmt{List: cases},
+	}
+
+	// 4. Create the infinite for loop that contains the switch
+	loopStmt := &ast.ForStmt{
+		Body: &ast.BlockStmt{
+			List: []ast.Stmt{
+				// Add a condition to break the loop
+				&ast.IfStmt{
+					Cond: &ast.BinaryExpr{
+						X:  ctrlVar,
+						Op: token.LSS, // Less than 0
+						Y:  &ast.BasicLit{Kind: token.INT, Value: "0"},
+					},
+					Body: &ast.BlockStmt{List: []ast.Stmt{&ast.BranchStmt{Tok: token.BREAK}}},
+				},
+				switchStmt,
+			},
+		},
+	}
+
+	// 5. Assemble the new function body
+	newBody := &ast.BlockStmt{
+		List: []ast.Stmt{
+			initStmt,
+			loopStmt,
+		},
+	}
+
+	return newBody
+}

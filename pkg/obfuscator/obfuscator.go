@@ -51,7 +51,7 @@ type controlFlowPass struct{}
 
 func (p *controlFlowPass) Apply(fset *token.FileSet, file *ast.File) error {
 	fmt.Println("  - Obfuscating control flow...")
-	ObfuscateControlFlow(file)
+	ControlFlow(file)
 	return nil
 }
 
