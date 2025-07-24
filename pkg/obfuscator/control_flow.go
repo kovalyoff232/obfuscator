@@ -5,85 +5,59 @@ import (
 	"go/token"
 	"math/rand"
 	"strconv"
+
+	"golang.org/x/tools/go/ast/astutil"
 )
 
 // ObfuscateControlFlow обходит AST и заменяет блоки кода на `switch`.
 func ObfuscateControlFlow(node *ast.File) {
-	ast.Inspect(node, func(n ast.Node) bool {
-		block, ok := n.(*ast.BlockStmt)
-		if !ok || len(block.List) < 2 {
+	astutil.Apply(node, func(cursor *astutil.Cursor) bool {
+		block, ok := cursor.Node().(*ast.BlockStmt)
+		if !ok || len(block.List) < 1 {
 			return true
 		}
 
-		if rand.Intn(100) < 50 { // Увеличим шанс для тестирования
-			newBlock := hoistVarsAndCreateOpaqueSwitch(block)
-			*block = *newBlock
-		}
-
-		return true
-	})
-}
-
-func hoistVarsAndCreateOpaqueSwitch(block *ast.BlockStmt) *ast.BlockStmt {
-	varsToHoist := make(map[string]bool)
-	var newBodyStmts []ast.Stmt
-
-	// 1. Собираем все имена переменных, которые объявляются через `:=`.
-	ast.Inspect(block, func(n ast.Node) bool {
-		assign, ok := n.(*ast.AssignStmt)
-		if !ok || assign.Tok != token.DEFINE {
-			return true
-		}
-		for _, lhs := range assign.Lhs {
-			if ident, ok := lhs.(*ast.Ident); ok {
-				varsToHoist[ident.Name] = true
+		// Проверяем, не является ли родительский узел `CaseClause`.
+		// Это предотвращает вложенность switch-ей.
+		if parent := cursor.Parent(); parent != nil {
+			if _, ok := parent.(*ast.CaseClause); ok {
+				return true
 			}
 		}
-		return true
-	})
 
-	if len(varsToHoist) == 0 {
-		return block // Нечего "поднимать".
-	}
-
-	// 2. Создаем объявления `var` для всех найденных переменных.
-	var varSpecs []ast.Spec
-	for varName := range varsToHoist {
-		varSpecs = append(varSpecs, &ast.ValueSpec{
-			Names: []*ast.Ident{ast.NewIdent(varName)},
-			Type:  &ast.InterfaceType{Methods: &ast.FieldList{}},
-		})
-	}
-	varDecl := &ast.DeclStmt{Decl: &ast.GenDecl{Tok: token.VAR, Specs: varSpecs}}
-
-	// 3. Заменяем все `:=` на `=` в блоке.
-	for _, stmt := range block.List {
-		if assign, ok := stmt.(*ast.AssignStmt); ok && assign.Tok == token.DEFINE {
-			assign.Tok = token.ASSIGN
+		if rand.Intn(100) < 30 { // 30% шанс
+			newStmts := createOpaqueSwitch(block.List)
+			block.List = newStmts
 		}
-		newBodyStmts = append(newBodyStmts, stmt)
-	}
 
-	// 4. Создаем `switch`.
+		return true
+	}, nil)
+}
+
+// createOpaqueSwitch создает switch с одним default-кейсом, который содержит все инструкции.
+func createOpaqueSwitch(stmts []ast.Stmt) []ast.Stmt {
 	ctrlVarName := "o_ctrl_" + strconv.Itoa(rand.Intn(1000))
+
+	// `o_ctrl_XXX := 0`
 	initCtrlVar := &ast.AssignStmt{
 		Lhs: []ast.Expr{ast.NewIdent(ctrlVarName)},
 		Tok: token.DEFINE,
 		Rhs: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "0"}},
 	}
+
+	// `switch o_ctrl_XXX { default: ... }`
 	switchStmt := &ast.SwitchStmt{
 		Tag: ast.NewIdent(ctrlVarName),
 		Body: &ast.BlockStmt{
 			List: []ast.Stmt{
 				&ast.CaseClause{
 					List: nil, // default
-					Body: newBodyStmts,
+					Body: stmts,
 				},
 			},
 		},
 	}
 
-	// 5. Собираем итоговый блок.
-	finalStmts := []ast.Stmt{varDecl, initCtrlVar, switchStmt}
-	return &ast.BlockStmt{List: finalStmts}
+	return []ast.Stmt{initCtrlVar, switchStmt}
 }
+

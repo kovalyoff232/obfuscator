@@ -1,8 +1,5 @@
 #!/bin/bash
 
-# Скрипт для сборки и запуска обфускатора с примером использования.
-
-# 1. Сборка проекта
 echo "Сборка проекта..."
 go build -o obfuscator_cli .
 if [ $? -ne 0 ]; then
@@ -11,7 +8,6 @@ if [ $? -ne 0 ]; then
 fi
 echo "Сборка завершена."
 
-# 2. Подготовка тестовой директории
 echo -e "\nПодготовка тестового исходного кода..."
 mkdir -p ./example_src/pkg
 cat > ./example_src/main.go << EOL
@@ -32,7 +28,6 @@ EOL
 
 echo "Тестовый код создан."
 
-# 3. Запуск обфускатора
 echo -e "\nЗапуск обфускатора..."
 ./obfuscator_cli -input ./example_src -output ./obfuscated_src
 if [ $? -ne 0 ]; then
@@ -41,12 +36,10 @@ if [ $? -ne 0 ]; then
 fi
 echo "Обфускация завершена."
 
-# 4. Проверка результата
 echo -e "\nСодержимое обфусцированного файла (obfuscated_src/main.go):"
 cat ./obfuscated_src/main.go
 
 echo -e "\n\nПопытка собрать и запустить обфусцированный код..."
-# Сначала соберем бинарник из обфусцированного кода
 go build -o ./obfuscated_src/obfuscated_payload ./obfuscated_src/main.go
 if [ $? -ne 0 ]; then
     echo "Ошибка сборки обфусцированного кода."
@@ -54,7 +47,6 @@ if [ $? -ne 0 ]; then
 fi
 echo "Обфусцированный код успешно собран."
 
-# Запускаем его для проверки
 ./obfuscated_src/obfuscated_payload
 if [ $? -ne 0 ]; then
     echo "Ошибка запуска обфусцированного кода."
@@ -63,9 +55,14 @@ fi
 
 echo -e "\n\nСкрипт успешно выполнен."
 
-# 5. Загрузка на VirusTotal
 echo -e "\n\n--- Проверка на VirusTotal ---"
-VT_API_KEY="93d38060166cefe2b415667a010a7cedec7be98db5070b3f359c46f06f3ff5a5"
+
+if [ -z "$VT_API_KEY" ]; then
+    echo "Переменная окружения VT_API_KEY не установлена. Пропускаю шаг с VirusTotal."
+    echo "Для проверки установите ключ: export VT_API_KEY='ваш_ключ'"
+    exit 0
+fi
+
 OBFUSCATED_BINARY="./obfuscated_src/obfuscated_payload"
 
 if ! command -v jq &> /dev/null
@@ -76,7 +73,6 @@ fi
 
 echo "Загружаю файл $OBFUSCATED_BINARY на VirusTotal..."
 
-# Шаг 1: Загрузка файла
 UPLOAD_RESPONSE=$(curl --silent --request POST \
   --url https://www.virustotal.com/api/v3/files \
   --header "x-apikey: $VT_API_KEY" \
@@ -93,7 +89,6 @@ fi
 echo "Файл успешно загружен. ID анализа: $ANALYSIS_ID"
 echo "Ожидание отчета..."
 
-# Шаг 2: Получение отчета по ID анализа
 while true; do
     ANALYSIS_REPORT=$(curl --silent --request GET \
       --url "https://www.virustotal.com/api/v3/analyses/$ANALYSIS_ID" \
@@ -110,7 +105,6 @@ while true; do
     sleep 15
 done
 
-# Шаг 3: Вывод результата
 echo -e "\n--- Отчет VirusTotal ---"
 STATS=$(echo "$ANALYSIS_REPORT" | jq .data.attributes.stats)
 MALICIOUS=$(echo "$STATS" | jq .malicious)
