@@ -19,6 +19,7 @@ func main() {
 	obfuscateExpressions := flag.Bool("obfuscate-expressions", true, "Enable expression obfuscation")
 	obfuscateDataFlow := flag.Bool("obfuscate-data-flow", true, "Enable data flow obfuscation (structs, globals)")
 	obfuscateConstants := flag.Bool("obfuscate-constants", true, "Enable constant obfuscation")
+	antiDebugging := flag.Bool("anti-debug", true, "Enable anti-debugging checks")
 
 	flag.Parse()
 
@@ -41,13 +42,14 @@ func main() {
 	}
 
 	cfg := &obfuscator.Config{
-		RenameIdentifiers:      *rename,
-		EncryptStrings:         *encryptStrings,
-		InsertDeadCode:         *insertDeadCode,
-		ObfuscateControlFlow:   *obfuscateControlFlow,
-		ObfuscateExpressions:   *obfuscateExpressions,
-		ObfuscateDataFlow:      *obfuscateDataFlow,
-		ObfuscateConstants:     *obfuscateConstants,
+		RenameIdentifiers:		*rename,
+		EncryptStrings:			*encryptStrings,
+		InsertDeadCode:			*insertDeadCode,
+		ObfuscateControlFlow:	*obfuscateControlFlow,
+		ObfuscateExpressions:	*obfuscateExpressions,
+		ObfuscateDataFlow:		*obfuscateDataFlow,
+		ObfuscateConstants:		*obfuscateConstants,
+		AntiDebugging:			*antiDebugging,
 	}
 
 	fmt.Printf("Starting obfuscation...\n")

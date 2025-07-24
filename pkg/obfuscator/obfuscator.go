@@ -71,6 +71,14 @@ func (p *constantPass) Apply(fset *token.FileSet, file *ast.File) error {
 	return nil
 }
 
+type antiDebugPass struct{}
+
+func (p *antiDebugPass) Apply(fset *token.FileSet, file *ast.File) error {
+	fmt.Println("  - Injecting anti-debugging checks...")
+	pass := &AntiDebugPass{}
+	return pass.Apply(fset, file)
+}
+
 // --- New Type-Aware Pass ---
 
 // (This is now defined in data_flow.go)
@@ -83,8 +91,9 @@ type Config struct {
 	InsertDeadCode       bool
 	ObfuscateControlFlow bool
 	ObfuscateExpressions bool
-	ObfuscateConstants   bool // New flag
-	ObfuscateDataFlow    bool // New flag
+	ObfuscateConstants   bool
+	ObfuscateDataFlow    bool
+	AntiDebugging        bool
 }
 
 type Obfuscator struct {
@@ -118,6 +127,10 @@ func NewObfuscator(cfg *Config) *Obfuscator {
 	}
 	if cfg.ObfuscateControlFlow {
 		syntaxPasses = append(syntaxPasses, &controlFlowPass{})
+	}
+	// Anti-debugging should be one of the last passes, so the checks themselves are obfuscated.
+	if cfg.AntiDebugging {
+		syntaxPasses = append(syntaxPasses, &antiDebugPass{})
 	}
 
 	return &Obfuscator{
