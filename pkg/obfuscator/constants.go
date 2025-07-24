@@ -79,7 +79,7 @@ func generateObfuscatedIntExpr(val int64) ast.Expr {
 	k := rand.Int63n(1000) + 1 // A random integer to use in the expression.
 
 	// Randomly choose one of the obfuscation techniques.
-	method := rand.Intn(2)
+	method := rand.Intn(3) // Increased to 3 for more variety
 	switch method {
 	case 0:
 		// Technique 1: val => (val + k) - k
@@ -106,6 +106,19 @@ func generateObfuscatedIntExpr(val int64) ast.Expr {
 				},
 			},
 			Op: token.XOR,
+			Y:  &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("%d", k)},
+		}
+	case 2:
+		// Technique 3: val => (val - k) + k
+		return &ast.BinaryExpr{
+			X: &ast.ParenExpr{
+				X: &ast.BinaryExpr{
+					X:  &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("%d", val)},
+					Op: token.SUB,
+					Y:  &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("%d", k)},
+				},
+			},
+			Op: token.ADD,
 			Y:  &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("%d", k)},
 		}
 	default:
