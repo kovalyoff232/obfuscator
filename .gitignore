@@ -1,0 +1,25 @@
+# Go binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+
+# Output of the go coverage tool, can be stored in different places
+/coverage.out
+
+# Local development artifacts
+/payload_clear
+/payload_final
+/obfuscated_src/
+
+# IDE settings
+.idea/
+.vscode/
+
+# OS-specific
+.DS_Store
+Thumbs.db
