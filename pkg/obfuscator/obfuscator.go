@@ -86,6 +86,14 @@ func (p *antiDebugPass) Apply(fset *token.FileSet, file *ast.File) error {
 	return pass.Apply(fset, file)
 }
 
+type antiVMPass struct{}
+
+func (p *antiVMPass) Apply(fset *token.FileSet, file *ast.File) error {
+	fmt.Println("  - Injecting anti-VM checks...")
+	pass := &AntiVMPass{}
+	return pass.Apply(fset, file)
+}
+
 
 // (This is now defined in data_flow.go)
 
@@ -100,6 +108,7 @@ type Config struct {
 	ObfuscateConstants   bool
 	ObfuscateDataFlow    bool
 	AntiDebugging        bool
+	AntiVM               bool
 	IndirectCalls        bool
 }
 
@@ -113,6 +122,14 @@ func NewObfuscator(cfg *Config) *Obfuscator {
 	var syntaxPasses []Pass
 	var globalPasses []GlobalPass
 	var typeAwarePasses []TypeAwarePass
+
+	// Anti-VM and Anti-debugging should run early to protect the binary from the start.
+	if cfg.AntiVM {
+		syntaxPasses = append(syntaxPasses, &antiVMPass{})
+	}
+	if cfg.AntiDebugging {
+		syntaxPasses = append(syntaxPasses, &antiDebugPass{})
+	}
 
 	// Data flow obfuscation should run before other things that might break type analysis.
 	if cfg.ObfuscateDataFlow {
@@ -141,10 +158,7 @@ func NewObfuscator(cfg *Config) *Obfuscator {
 	if cfg.IndirectCalls {
 		globalPasses = append(globalPasses, &CallIndirectionPass{})
 	}
-	// Anti-debugging should be one of the last passes.
-	if cfg.AntiDebugging {
-		syntaxPasses = append(syntaxPasses, &antiDebugPass{})
-	}
+
 
 	return &Obfuscator{
 		syntaxPasses:    syntaxPasses,

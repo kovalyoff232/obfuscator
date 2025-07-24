@@ -3,12 +3,16 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math/rand"
+	"obfuscator/pkg/obfuscator"
 	"os"
 	"path/filepath"
-	"obfuscator/pkg/obfuscator"
+	"time"
 )
 
 func main() {
+	rand.Seed(time.Now().UnixNano())
+
 	inputPath := flag.String("input", "", "Path to the source directory or file")
 	outputPath := flag.String("output", "./obfuscated_src", "Path to the output directory for the results")
 	
@@ -20,6 +24,7 @@ func main() {
 	obfuscateDataFlow := flag.Bool("obfuscate-data-flow", true, "Enable data flow obfuscation (structs, globals)")
 	obfuscateConstants := flag.Bool("obfuscate-constants", true, "Enable constant obfuscation")
 	antiDebugging := flag.Bool("anti-debug", true, "Enable anti-debugging checks")
+	antiVM := flag.Bool("anti-vm", true, "Enable anti-virtual machine checks")
 	indirectCalls := flag.Bool("indirect-calls", true, "Enable call indirection")
 
 	flag.Parse()
@@ -51,6 +56,7 @@ func main() {
 		ObfuscateDataFlow:		*obfuscateDataFlow,
 		ObfuscateConstants:		*obfuscateConstants,
 		AntiDebugging:			*antiDebugging,
+		AntiVM:					*antiVM,
 		IndirectCalls:			*indirectCalls,
 	}
 
