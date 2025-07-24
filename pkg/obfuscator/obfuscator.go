@@ -17,6 +17,11 @@ type Pass interface {
 	Apply(fset *token.FileSet, file *ast.File) error
 }
 
+// GlobalPass represents a syntax-only obfuscation pass that needs to run on all files at once.
+type GlobalPass interface {
+	Apply(fset *token.FileSet, files map[string]*ast.File) error
+}
+
 // TypeAwarePass represents a semantic obfuscation pass that requires type info for the whole package.
 type TypeAwarePass interface {
 	Apply(pkg *packages.Package) error
@@ -79,7 +84,6 @@ func (p *antiDebugPass) Apply(fset *token.FileSet, file *ast.File) error {
 	return pass.Apply(fset, file)
 }
 
-// --- New Type-Aware Pass ---
 
 // (This is now defined in data_flow.go)
 
@@ -94,24 +98,27 @@ type Config struct {
 	ObfuscateConstants   bool
 	ObfuscateDataFlow    bool
 	AntiDebugging        bool
+	IndirectCalls        bool
 }
 
 type Obfuscator struct {
 	syntaxPasses    []Pass
+	globalPasses    []GlobalPass
 	typeAwarePasses []TypeAwarePass
 }
 
 func NewObfuscator(cfg *Config) *Obfuscator {
 	var syntaxPasses []Pass
+	var globalPasses []GlobalPass
 	var typeAwarePasses []TypeAwarePass
 
-	// Order is important here. Renaming should generally go first.
-	if cfg.RenameIdentifiers {
-		syntaxPasses = append(syntaxPasses, &renamePass{})
-	}
 	// Data flow obfuscation should run before other things that might break type analysis.
 	if cfg.ObfuscateDataFlow {
 		typeAwarePasses = append(typeAwarePasses, &DataFlowPass{})
+	}
+	// Order is important here. Renaming should generally go after major structural changes.
+	if cfg.RenameIdentifiers {
+		syntaxPasses = append(syntaxPasses, &renamePass{})
 	}
 	if cfg.ObfuscateConstants {
 		syntaxPasses = append(syntaxPasses, &constantPass{})
@@ -128,13 +135,18 @@ func NewObfuscator(cfg *Config) *Obfuscator {
 	if cfg.ObfuscateControlFlow {
 		syntaxPasses = append(syntaxPasses, &controlFlowPass{})
 	}
-	// Anti-debugging should be one of the last passes, so the checks themselves are obfuscated.
+	// Call indirection should run after most other syntax passes, so the dispatcher itself gets obfuscated.
+	if cfg.IndirectCalls {
+		globalPasses = append(globalPasses, &CallIndirectionPass{})
+	}
+	// Anti-debugging should be one of the last passes.
 	if cfg.AntiDebugging {
 		syntaxPasses = append(syntaxPasses, &antiDebugPass{})
 	}
 
 	return &Obfuscator{
 		syntaxPasses:    syntaxPasses,
+		globalPasses:    globalPasses,
 		typeAwarePasses: typeAwarePasses,
 	}
 }
@@ -180,9 +192,24 @@ func ProcessDirectory(inputPath, outputPath string, cfg *Config) error {
 
 			fmt.Printf("Processing file: %s\n", filePath)
 			for _, pass := range obfuscator.syntaxPasses {
+				if _, ok := pass.(*renamePass); ok && filepath.Base(filePath) == "main.go" {
+					fmt.Println("  - Skipping identifier renaming for main.go to preserve critical variables.")
+					continue
+				}
 				if err := pass.Apply(fset, fileNode); err != nil {
 					return fmt.Errorf("error in syntax pass for file %s: %w", filePath, err)
 				}
+			}
+		}
+
+		// Run global passes that operate on all files at once.
+		fileMap := make(map[string]*ast.File)
+		for i, filePath := range pkg.GoFiles {
+			fileMap[filePath] = pkg.Syntax[i]
+		}
+		for _, pass := range obfuscator.globalPasses {
+			if err := pass.Apply(fset, fileMap); err != nil {
+				return fmt.Errorf("error in global pass for package %s: %w", pkg.Name, err)
 			}
 		}
 

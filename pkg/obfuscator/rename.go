@@ -1,6 +1,7 @@
 package obfuscator
 
 import (
+	"fmt"
 	"go/ast"
 	"math/rand"
 	"time"
@@ -8,7 +9,7 @@ import (
 
 // newName generates a random string of a random length between 8 and 16 characters.
 // The character set includes lower and upper case letters, and numbers.
-func newName() string {
+func newName(prefix string) string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	const minLength = 8
 	const maxLength = 16
@@ -18,13 +19,24 @@ func newName() string {
 	for i := range b {
 		b[i] = charset[rand.Intn(len(charset))]
 	}
-	return string(b)
+	return prefix + string(b)
 }
 
 func isSafeToRename(ident *ast.Ident) bool {
-	if ident == nil || ident.Obj == nil {
+	if ident == nil || ident.Obj == nil || ident.Obj.Decl == nil {
 		return false
 	}
+
+	// Check if the identifier is part of a variable declaration that is now a function.
+	// This is a sign that DataFlowPass has already processed it.
+	if spec, ok := ident.Obj.Decl.(*ast.ValueSpec); ok {
+		for _, val := range spec.Values {
+			if _, isFuncLit := val.(*ast.FuncLit); isFuncLit {
+				return false
+			}
+		}
+	}
+
 	// Do not rename exported identifiers, the main/init functions, or the blank identifier.
 	return !ident.IsExported() && ident.Name != "main" && ident.Name != "init" && ident.Name != "_"
 }
@@ -48,9 +60,9 @@ func RenameIdentifiers(node *ast.File) {
 		if ident.Obj != nil && ident.Obj.Decl == n {
 			if isSafeToRename(ident) {
 				// Ensure we don't accidentally generate the same name for different objects.
-				// While unlikely with random strings, this is a safeguard.
 				if _, exists := nameMap[ident.Obj]; !exists {
-					nameMap[ident.Obj] = newName()
+					// Use a prefix to ensure it's a valid Go identifier
+					nameMap[ident.Obj] = newName("o_")
 				}
 			}
 		}
@@ -70,4 +82,5 @@ func RenameIdentifiers(node *ast.File) {
 		}
 		return true
 	})
+	fmt.Println("  - Renaming identifiers...")
 }

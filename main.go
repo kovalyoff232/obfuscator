@@ -20,6 +20,7 @@ func main() {
 	obfuscateDataFlow := flag.Bool("obfuscate-data-flow", true, "Enable data flow obfuscation (structs, globals)")
 	obfuscateConstants := flag.Bool("obfuscate-constants", true, "Enable constant obfuscation")
 	antiDebugging := flag.Bool("anti-debug", true, "Enable anti-debugging checks")
+	indirectCalls := flag.Bool("indirect-calls", true, "Enable call indirection")
 
 	flag.Parse()
 
@@ -50,6 +51,7 @@ func main() {
 		ObfuscateDataFlow:		*obfuscateDataFlow,
 		ObfuscateConstants:		*obfuscateConstants,
 		AntiDebugging:			*antiDebugging,
+		IndirectCalls:			*indirectCalls,
 	}
 
 	fmt.Printf("Starting obfuscation...\n")

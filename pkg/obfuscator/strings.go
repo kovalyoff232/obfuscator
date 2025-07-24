@@ -10,20 +10,19 @@ import (
 	"golang.org/x/tools/go/ast/astutil"
 )
 
-// encryptBytes performs a simple two-step encryption on a byte slice.
-func encryptBytes(data []byte, key byte) []byte {
+// encryptBytesWithRollingKey performs encryption using a key that changes for each byte.
+func encryptBytesWithRollingKey(data []byte, initialKey byte) []byte {
 	result := make([]byte, len(data))
+	key := initialKey
 	for i, b := range data {
-		// Step 1: XOR with the key
 		encrypted := b ^ key
-		// Step 2: Add a constant value (e.g., the key itself)
-		result[i] = encrypted + key
+		result[i] = encrypted
+		key = b // The next key is the original byte, creating a chain
 	}
 	return result
 }
 
-// EncryptStrings finds all string literals in the file and replaces them with
-// an inlined, immediately-invoked function that decrypts the string at runtime.
+// EncryptStrings finds all string literals and replaces them with a function that decrypts them.
 func EncryptStrings(fset *token.FileSet, file *ast.File) error {
 	rand.Seed(time.Now().UnixNano())
 
@@ -33,12 +32,9 @@ func EncryptStrings(fset *token.FileSet, file *ast.File) error {
 			return true
 		}
 
-		// Skip import paths
 		if _, ok := cursor.Parent().(*ast.ImportSpec); ok {
 			return true
 		}
-
-		// Skip struct tags
 		if field, ok := cursor.Parent().(*ast.Field); ok {
 			if field.Tag == lit {
 				return true
@@ -50,76 +46,57 @@ func EncryptStrings(fset *token.FileSet, file *ast.File) error {
 			return true
 		}
 
-		randomKey := byte(rand.Intn(255) + 1) // Avoid key 0 for simplicity
-		encryptedBytes := encryptBytes([]byte(originalString), randomKey)
+		// Split the key into two parts to make it harder to find in the binary
+		keyPart1 := byte(rand.Intn(256))
+		keyPart2 := byte(rand.Intn(256))
+		initialKey := keyPart1 ^ keyPart2
 
-		// If the string was a constant, we must change its declaration to var
-		path, _ := astutil.PathEnclosingInterval(file, lit.Pos(), lit.End())
-		if path != nil {
-			for _, pnode := range path {
-				if genDecl, ok := pnode.(*ast.GenDecl); ok && genDecl.Tok == token.CONST {
-					genDecl.Tok = token.VAR
-					genDecl.Doc = nil
-					break
-				}
-			}
-		}
+		encryptedBytes := encryptBytesWithRollingKey([]byte(originalString), initialKey)
 
-		// Replace the string literal with an immediately-invoked function expression (IIFE).
-		// This inlines the decryption logic.
-		iife := createInlineDecryptor(encryptedBytes, randomKey)
+		// Replace the literal with an immediately-invoked function that decrypts it
+		iife := createRollingDecryptor(encryptedBytes, keyPart1, keyPart2)
 		cursor.Replace(iife)
 
 		return true
 	}, nil)
 
-	// No need to inject a global decrypt function anymore.
 	return nil
 }
 
-// createInlineDecryptor generates the AST for an immediately-invoked function
-// that decrypts the given data.
-func createInlineDecryptor(encryptedData []byte, key byte) *ast.CallExpr {
-	// AST for the encrypted byte slice literal
+// createRollingDecryptor generates the AST for an IIFE that decrypts data using a rolling key.
+func createRollingDecryptor(encryptedData []byte, keyPart1, keyPart2 byte) *ast.CallExpr {
 	byteSliceLit := &ast.CompositeLit{Type: &ast.ArrayType{Elt: ast.NewIdent("byte")}}
 	for _, b := range encryptedData {
 		byteSliceLit.Elts = append(byteSliceLit.Elts, &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(int(b))})
 	}
 
-	// AST for `byte(KEY_VALUE)`
-	keyExpr := &ast.CallExpr{
+	keyPart1Expr := &ast.CallExpr{
 		Fun:  ast.NewIdent("byte"),
-		Args: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(int(key))}},
+		Args: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(int(keyPart1))}},
+	}
+	keyPart2Expr := &ast.CallExpr{
+		Fun:  ast.NewIdent("byte"),
+		Args: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(int(keyPart2))}},
 	}
 
-	// The body of the anonymous function
 	funcBody := &ast.BlockStmt{
 		List: []ast.Stmt{
-			// data := []byte{...}
-			&ast.AssignStmt{
-				Lhs: []ast.Expr{ast.NewIdent("data")},
-				Tok: token.DEFINE,
-				Rhs: []ast.Expr{byteSliceLit},
-			},
-			// key := byte(...)
+			&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent("data")}, Tok: token.DEFINE, Rhs: []ast.Expr{byteSliceLit}},
+			&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent("k1")}, Tok: token.DEFINE, Rhs: []ast.Expr{keyPart1Expr}},
+			&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent("k2")}, Tok: token.DEFINE, Rhs: []ast.Expr{keyPart2Expr}},
 			&ast.AssignStmt{
 				Lhs: []ast.Expr{ast.NewIdent("key")},
 				Tok: token.DEFINE,
-				Rhs: []ast.Expr{keyExpr},
+				Rhs: []ast.Expr{&ast.BinaryExpr{X: ast.NewIdent("k1"), Op: token.XOR, Y: ast.NewIdent("k2")}},
 			},
-			// decrypted := make([]byte, len(data))
 			&ast.AssignStmt{
 				Lhs: []ast.Expr{ast.NewIdent("decrypted")},
 				Tok: token.DEFINE,
 				Rhs: []ast.Expr{&ast.CallExpr{
-					Fun: ast.NewIdent("make"),
-					Args: []ast.Expr{
-						&ast.ArrayType{Elt: ast.NewIdent("byte")},
-						&ast.CallExpr{Fun: ast.NewIdent("len"), Args: []ast.Expr{ast.NewIdent("data")}},
-					},
+					Fun:  ast.NewIdent("make"),
+					Args: []ast.Expr{&ast.ArrayType{Elt: ast.NewIdent("byte")}, &ast.CallExpr{Fun: ast.NewIdent("len"), Args: []ast.Expr{ast.NewIdent("data")}}},
 				}},
 			},
-			// for i, b := range data { ... }
 			&ast.RangeStmt{
 				Key:   ast.NewIdent("i"),
 				Value: ast.NewIdent("b"),
@@ -127,42 +104,36 @@ func createInlineDecryptor(encryptedData []byte, key byte) *ast.CallExpr {
 				X:     ast.NewIdent("data"),
 				Body: &ast.BlockStmt{List: []ast.Stmt{
 					&ast.AssignStmt{
+						Lhs: []ast.Expr{ast.NewIdent("originalByte")},
+						Tok: token.DEFINE,
+						Rhs: []ast.Expr{&ast.BinaryExpr{X: ast.NewIdent("b"), Op: token.XOR, Y: ast.NewIdent("key")}},
+					},
+					&ast.AssignStmt{
 						Lhs: []ast.Expr{&ast.IndexExpr{X: ast.NewIdent("decrypted"), Index: ast.NewIdent("i")}},
 						Tok: token.ASSIGN,
-						Rhs: []ast.Expr{
-							// (b - key) ^ key
-							&ast.BinaryExpr{
-								X: &ast.ParenExpr{X: &ast.BinaryExpr{
-									X:  ast.NewIdent("b"),
-									Op: token.SUB,
-									Y:  ast.NewIdent("key"),
-								}},
-								Op: token.XOR,
-								Y:  ast.NewIdent("key"),
-							},
-						},
+						Rhs: []ast.Expr{ast.NewIdent("originalByte")},
+					},
+					&ast.AssignStmt{
+						Lhs: []ast.Expr{ast.NewIdent("key")},
+						Tok: token.ASSIGN,
+						Rhs: []ast.Expr{ast.NewIdent("originalByte")},
 					},
 				}},
 			},
-			// return string(decrypted)
 			&ast.ReturnStmt{Results: []ast.Expr{
 				&ast.CallExpr{Fun: ast.NewIdent("string"), Args: []ast.Expr{ast.NewIdent("decrypted")}},
 			}},
 		},
 	}
 
-	// The anonymous function literal
-	funcLit := &ast.FuncLit{
-		Type: &ast.FuncType{
-			Params:  &ast.FieldList{}, // No parameters
-			Results: &ast.FieldList{List: []*ast.Field{{Type: ast.NewIdent("string")}}},
-		},
-		Body: funcBody,
-	}
-
-	// The call expression that invokes the anonymous function immediately
 	return &ast.CallExpr{
-		Fun:  funcLit,
-		Args: []ast.Expr{}, // No arguments
+		Fun: &ast.FuncLit{
+			Type: &ast.FuncType{
+				Params:  &ast.FieldList{},
+				Results: &ast.FieldList{List: []*ast.Field{{Type: ast.NewIdent("string")}}},
+			},
+			Body: funcBody,
+		},
+		Args: []ast.Expr{},
 	}
 }
