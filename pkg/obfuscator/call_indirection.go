@@ -21,7 +21,7 @@ type CallIndirectionPass struct {
 	dispatcherFuncName string
 }
 
-func (p *CallIndirectionPass) Apply(fset *token.FileSet, files map[string]*ast.File) error {
+func (p *CallIndirectionPass) Apply(obf *Obfuscator, fset *token.FileSet, files map[string]*ast.File) error {
 	fmt.Println("  - Applying call indirection...")
 	p.funcs = make(map[string]*funcInfo)
 	p.dispatcherFuncName = newName("dispatch_")

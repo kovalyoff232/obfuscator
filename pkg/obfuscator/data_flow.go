@@ -14,7 +14,7 @@ import (
 // DataFlowPass renames struct fields, global variables, and shuffles struct layouts.
 type DataFlowPass struct{}
 
-func (p *DataFlowPass) Apply(pkg *packages.Package) error {
+func (p *DataFlowPass) Apply(obf *Obfuscator, pkg *packages.Package) error {
 	if err := p.renameGlobalsAndFields(pkg); err != nil {
 		return fmt.Errorf("failed to rename globals and fields: %w", err)
 	}
