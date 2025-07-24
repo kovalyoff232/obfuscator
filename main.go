@@ -17,6 +17,7 @@ func main() {
 	insertDeadCode := flag.Bool("insert-dead-code", true, "Enable dead code insertion")
 	obfuscateControlFlow := flag.Bool("obfuscate-control-flow", true, "Enable control flow obfuscation")
 	obfuscateExpressions := flag.Bool("obfuscate-expressions", true, "Enable expression obfuscation")
+	obfuscateDataFlow := flag.Bool("obfuscate-data-flow", true, "Enable data flow obfuscation (structs, globals)")
 
 	flag.Parse()
 
@@ -44,6 +45,7 @@ func main() {
 		InsertDeadCode:         *insertDeadCode,
 		ObfuscateControlFlow:   *obfuscateControlFlow,
 		ObfuscateExpressions:   *obfuscateExpressions,
+		ObfuscateDataFlow:      *obfuscateDataFlow,
 	}
 
 	fmt.Printf("Starting obfuscation...\n")

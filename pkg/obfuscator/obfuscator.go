@@ -1,19 +1,29 @@
 package obfuscator
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/printer"
 	"go/token"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"golang.org/x/tools/go/packages"
 )
 
+// Pass represents a syntax-only obfuscation pass that runs on a single file.
 type Pass interface {
 	Apply(file *ast.File) error
 }
+
+// TypeAwarePass represents a semantic obfuscation pass that requires type info for the whole package.
+type TypeAwarePass interface {
+	Apply(pkg *packages.Package) error
+}
+
+// --- Pass Implementations ---
+
 type stringEncryptionPass struct{}
 
 func (p *stringEncryptionPass) Apply(file *ast.File) error {
@@ -53,48 +63,55 @@ func (p *expressionPass) Apply(file *ast.File) error {
 	return nil
 }
 
+// --- New Type-Aware Pass ---
+
+// (This is now defined in data_flow.go)
+
+// --- Configuration and Orchestration ---
+
 type Config struct {
-	RenameIdentifiers      bool
-	EncryptStrings         bool
-	InsertDeadCode         bool
-	ObfuscateControlFlow   bool
-	ObfuscateExpressions   bool
+	RenameIdentifiers    bool
+	EncryptStrings       bool
+	InsertDeadCode       bool
+	ObfuscateControlFlow bool
+	ObfuscateExpressions bool
+	ObfuscateDataFlow    bool // New flag
 }
 
 type Obfuscator struct {
-	passes []Pass
+	syntaxPasses     []Pass
+	typeAwarePasses  []TypeAwarePass
 }
 
 func NewObfuscator(cfg *Config) *Obfuscator {
-	var passes []Pass
+	var syntaxPasses []Pass
+	var typeAwarePasses []TypeAwarePass
 
+	// Order is important here. Renaming should generally go first.
 	if cfg.RenameIdentifiers {
-		passes = append(passes, &renamePass{})
+		syntaxPasses = append(syntaxPasses, &renamePass{})
 	}
-
+	// Data flow obfuscation should run before other things that might break type analysis.
+	if cfg.ObfuscateDataFlow {
+		typeAwarePasses = append(typeAwarePasses, &DataFlowPass{})
+	}
 	if cfg.ObfuscateExpressions {
-		passes = append(passes, &expressionPass{})
+		syntaxPasses = append(syntaxPasses, &expressionPass{})
 	}
 	if cfg.EncryptStrings {
-		passes = append(passes, &stringEncryptionPass{})
+		syntaxPasses = append(syntaxPasses, &stringEncryptionPass{})
 	}
 	if cfg.InsertDeadCode {
-		passes = append(passes, &deadCodePass{})
+		syntaxPasses = append(syntaxPasses, &deadCodePass{})
 	}
 	if cfg.ObfuscateControlFlow {
-		passes = append(passes, &controlFlowPass{})
+		syntaxPasses = append(syntaxPasses, &controlFlowPass{})
 	}
 
-	return &Obfuscator{passes: passes}
-}
-
-func (o *Obfuscator) runOnFile(node *ast.File) error {
-	for _, pass := range o.passes {
-		if err := pass.Apply(node); err != nil {
-			return err
-		}
+	return &Obfuscator{
+		syntaxPasses:    syntaxPasses,
+		typeAwarePasses: typeAwarePasses,
 	}
-	return nil
 }
 
 func ProcessDirectory(inputPath, outputPath string, cfg *Config) error {
@@ -106,42 +123,67 @@ func ProcessDirectory(inputPath, outputPath string, cfg *Config) error {
 	}
 
 	obfuscator := NewObfuscator(cfg)
+	fset := token.NewFileSet()
 
-	return filepath.Walk(inputPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() || !strings.HasSuffix(info.Name(), ".go") {
-			return nil
-		}
+	// Load and type-check the package.
+	loadCfg := &packages.Config{
+		Mode:  packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
+		Fset:  fset,
+		Dir:   inputPath,
+	}
+	pkgs, err := packages.Load(loadCfg, "./...")
+	if err != nil {
+		return fmt.Errorf("failed to load package: %w", err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		return fmt.Errorf("errors occurred while loading packages")
+	}
 
-		relPath, err := filepath.Rel(inputPath, path)
-		if err != nil {
-			return err
-		}
-		targetPath := filepath.Join(outputPath, relPath)
-		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-			return err
-		}
+	for _, pkg := range pkgs {
+		fmt.Printf("Processing package: %s\n", pkg.Name)
 
-		fmt.Printf("Processing file: %s -> %s\n", path, targetPath)
-
-		fset := token.NewFileSet()
-		node, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
-		if err != nil {
-			return fmt.Errorf("error parsing file %s: %w", path, err)
-		}
-
-		if err := obfuscator.runOnFile(node); err != nil {
-			return fmt.Errorf("error obfuscating file %s: %w", path, err)
+		// Run type-aware passes that operate on the whole package at once.
+		for _, pass := range obfuscator.typeAwarePasses {
+			if err := pass.Apply(pkg); err != nil {
+				return fmt.Errorf("error in type-aware pass for package %s: %w", pkg.Name, err)
+			}
 		}
 
-		outputFile, err := os.Create(targetPath)
-		if err != nil {
-			return fmt.Errorf("failed to create output file %s: %w", targetPath, err)
-		}
-		defer outputFile.Close()
+		// Run syntax-only passes on each file individually.
+		for i, filePath := range pkg.GoFiles {
+			fileNode := pkg.Syntax[i]
 
-		return printer.Fprint(outputFile, fset, node)
-	})
+			fmt.Printf("Processing file: %s\n", filePath)
+			for _, pass := range obfuscator.syntaxPasses {
+				if err := pass.Apply(fileNode); err != nil {
+					return fmt.Errorf("error in syntax pass for file %s: %w", filePath, err)
+				}
+			}
+		}
+
+		// Write the modified files to the output directory.
+		for i, filePath := range pkg.GoFiles {
+			fileNode := pkg.Syntax[i]
+
+			relPath, err := filepath.Rel(inputPath, filePath)
+			if err != nil {
+				return err
+			}
+			targetPath := filepath.Join(outputPath, relPath)
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+				return err
+			}
+
+			var buf bytes.Buffer
+			if err := printer.Fprint(&buf, fset, fileNode); err != nil {
+				return fmt.Errorf("failed to print AST for %s: %w", filePath, err)
+			}
+
+			if err := os.WriteFile(targetPath, buf.Bytes(), 0644); err != nil {
+				return fmt.Errorf("failed to write output file %s: %w", targetPath, err)
+			}
+		}
+	}
+
+	return nil
 }

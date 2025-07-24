@@ -25,6 +25,13 @@ func ObfuscateControlFlow(node *ast.File) {
 			}
 		}
 
+		// Check if the block contains a return statement. If so, skipping it to avoid "missing return" errors.
+		for _, stmt := range block.List {
+			if _, ok := stmt.(*ast.ReturnStmt); ok {
+				return true
+			}
+		}
+
 		if rand.Intn(100) < 30 { // 30% chance
 			newStmts := createOpaqueSwitch(block.List)
 			block.List = newStmts
