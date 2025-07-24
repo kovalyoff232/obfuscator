@@ -34,7 +34,7 @@ func ObfuscateConstants(file *ast.File) {
 			return true
 		}
 
-		val, err := strconv.ParseInt(lit.Value, 10, 64)
+		val, err := strconv.ParseInt(lit.Value, 0, 64)
 		if err != nil {
 			return true // Not a valid integer, skip.
 		}
