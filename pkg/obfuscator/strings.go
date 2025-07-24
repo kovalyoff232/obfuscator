@@ -1,7 +1,6 @@
 package obfuscator
 
 import (
-	"fmt"
 	"go/ast"
 	"go/token"
 	"math/rand"
@@ -13,6 +12,7 @@ import (
 
 const decryptFuncName = "o_d"
 
+// xorEncrypt performs a simple XOR encryption on a byte slice.
 func xorEncrypt(data []byte, key byte) []byte {
 	result := make([]byte, len(data))
 	for i, b := range data {
@@ -21,63 +21,24 @@ func xorEncrypt(data []byte, key byte) []byte {
 	return result
 }
 
+// EncryptStrings finds all string literals in the file and replaces them with a call
+// to a dynamically injected decryption function. Each string is encrypted with a unique key.
 func EncryptStrings(file *ast.File) error {
 	rand.Seed(time.Now().UnixNano())
-
-	numParts := 3
-	keyParts := make([]byte, numParts)
-	keyPartNames := make([]string, numParts)
-	var keyPartDecls []ast.Decl
-
-	for i := 0; i < numParts; i++ {
-		keyParts[i] = byte(rand.Intn(256))
-		keyPartNames[i] = fmt.Sprintf("o_k_%d", i)
-		
-		decl := &ast.GenDecl{
-			Tok: token.VAR,
-			Specs: []ast.Spec{
-				&ast.ValueSpec{
-					Names:  []*ast.Ident{ast.NewIdent(keyPartNames[i])},
-					Values: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(int(keyParts[i]))}},
-				},
-			},
-		}
-		keyPartDecls = append(keyPartDecls, decl)
-	}
-
-	operators := []token.Token{token.ADD, token.SUB, token.XOR}
-	
-	formula := ast.Expr(ast.NewIdent(keyPartNames[0]))
-	finalKey := keyParts[0]
-
-	for i := 1; i < numParts; i++ {
-		op := operators[rand.Intn(len(operators))]
-		formula = &ast.BinaryExpr{
-			X:  formula,
-			Op: op,
-			Y:  ast.NewIdent(keyPartNames[i]),
-		}
-		switch op {
-		case token.ADD:
-			finalKey += keyParts[i]
-		case token.SUB:
-			finalKey -= keyParts[i]
-		case token.XOR:
-			finalKey ^= keyParts[i]
-		}
-	}
-
 	hasEncryptedStrings := false
+
 	astutil.Apply(file, func(cursor *astutil.Cursor) bool {
 		lit, ok := cursor.Node().(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
 			return true
 		}
 
+		// Skip import paths
 		if _, ok := cursor.Parent().(*ast.ImportSpec); ok {
 			return true
 		}
 
+		// Skip struct tags
 		if field, ok := cursor.Parent().(*ast.Field); ok {
 			if field.Tag == lit {
 				return true
@@ -90,8 +51,10 @@ func EncryptStrings(file *ast.File) error {
 		}
 
 		hasEncryptedStrings = true
-		encryptedBytes := xorEncrypt([]byte(originalString), finalKey)
+		randomKey := byte(rand.Intn(256))
+		encryptedBytes := xorEncrypt([]byte(originalString), randomKey)
 
+		// If the string was a constant, we must change its declaration to var
 		path, _ := astutil.PathEnclosingInterval(file, lit.Pos(), lit.End())
 		if path != nil {
 			for _, pnode := range path {
@@ -102,24 +65,31 @@ func EncryptStrings(file *ast.File) error {
 			}
 		}
 
+		// Create the AST nodes for the encrypted byte slice and the key
 		byteSliceLit := &ast.CompositeLit{Type: &ast.ArrayType{Elt: ast.NewIdent("byte")}}
 		for _, b := range encryptedBytes {
 			byteSliceLit.Elts = append(byteSliceLit.Elts, &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(int(b))})
 		}
+		keyLit := &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(int(randomKey))}
+
+		// Create the call expression to the decrypt function
 		callExpr := &ast.CallExpr{
 			Fun:  ast.NewIdent(decryptFuncName),
-			Args: []ast.Expr{byteSliceLit},
+			Args: []ast.Expr{byteSliceLit, keyLit},
 		}
+
 		cursor.Replace(callExpr)
 		return true
 	}, nil)
 
+	// If we have encrypted at least one string, we need to inject the decryption function
 	if hasEncryptedStrings {
 		decryptFunc := &ast.FuncDecl{
 			Name: ast.NewIdent(decryptFuncName),
 			Type: &ast.FuncType{
 				Params: &ast.FieldList{List: []*ast.Field{
 					{Names: []*ast.Ident{ast.NewIdent("data")}, Type: &ast.ArrayType{Elt: ast.NewIdent("byte")}},
+					{Names: []*ast.Ident{ast.NewIdent("key")}, Type: ast.NewIdent("byte")},
 				}},
 				Results: &ast.FieldList{List: []*ast.Field{
 					{Type: ast.NewIdent("string")},
@@ -127,14 +97,6 @@ func EncryptStrings(file *ast.File) error {
 			},
 			Body: &ast.BlockStmt{
 				List: []ast.Stmt{
-					&ast.AssignStmt{
-						Lhs: []ast.Expr{ast.NewIdent("key")},
-						Tok: token.DEFINE,
-						Rhs: []ast.Expr{&ast.CallExpr{
-							Fun:  ast.NewIdent("byte"),
-							Args: []ast.Expr{&ast.ParenExpr{X: formula}},
-						}},
-					},
 					&ast.AssignStmt{
 						Lhs: []ast.Expr{ast.NewIdent("decrypted")},
 						Tok: token.DEFINE,
@@ -165,9 +127,9 @@ func EncryptStrings(file *ast.File) error {
 				},
 			},
 		}
-		
-		declsToInsert := append(keyPartDecls, decryptFunc)
-		file.Decls = append(file.Decls[:len(file.Imports)], append(declsToInsert, file.Decls[len(file.Imports):]...)...)
+
+		// Inject the decrypt function at the top level of the file, after imports
+		file.Decls = append(file.Decls[:len(file.Imports)], append([]ast.Decl{decryptFunc}, file.Decls[len(file.Imports):]...)...)
 	}
 
 	return nil
