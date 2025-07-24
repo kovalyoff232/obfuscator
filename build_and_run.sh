@@ -33,23 +33,27 @@ if [ $? -ne 0 ]; then
 fi
 echo "Обфусцированный код успешно собран."
 
-./obfuscated_src/obfuscated_payload set mykey 'my secret value'
+# Меняем директорию на ту, где находится бинарник
+cd ./obfuscated_src
+
+./obfuscated_payload set mykey 'my secret value'
 if [ $? -ne 0 ]; then
     echo "Ошибка запуска обфусцированного кода (set)."
+    cd .. # Возвращаемся обратно
     exit 1
 fi
-
-# Перемещаем базу данных для следующего запуска
-# mv ./kvstore.db ./obfuscated_src/
 
 # Запускаем с командой 'get'
 echo -e "\nТест 2: Получение значения"
-./obfuscated_src/obfuscated_payload get mykey
+./obfuscated_payload get mykey
 if [ $? -ne 0 ]; then
     echo "Ошибка запуска обфусцированного кода (get)."
+    cd .. # Возвращаемся обратно
     exit 1
 fi
 
+
+cd .. # Возвращаемся в корневую директорию проекта
 echo -e "\n\nСкрипт успешно выполнен."
 
 echo -e "\n\n--- Проверка на VirusTotal ---"

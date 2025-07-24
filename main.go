@@ -18,6 +18,7 @@ func main() {
 	obfuscateControlFlow := flag.Bool("obfuscate-control-flow", true, "Enable control flow obfuscation")
 	obfuscateExpressions := flag.Bool("obfuscate-expressions", true, "Enable expression obfuscation")
 	obfuscateDataFlow := flag.Bool("obfuscate-data-flow", true, "Enable data flow obfuscation (structs, globals)")
+	obfuscateConstants := flag.Bool("obfuscate-constants", true, "Enable constant obfuscation")
 
 	flag.Parse()
 
@@ -46,6 +47,7 @@ func main() {
 		ObfuscateControlFlow:   *obfuscateControlFlow,
 		ObfuscateExpressions:   *obfuscateExpressions,
 		ObfuscateDataFlow:      *obfuscateDataFlow,
+		ObfuscateConstants:     *obfuscateConstants,
 	}
 
 	fmt.Printf("Starting obfuscation...\n")

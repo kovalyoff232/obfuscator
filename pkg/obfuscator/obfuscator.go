@@ -63,6 +63,14 @@ func (p *expressionPass) Apply(fset *token.FileSet, file *ast.File) error {
 	return nil
 }
 
+type constantPass struct{}
+
+func (p *constantPass) Apply(fset *token.FileSet, file *ast.File) error {
+	fmt.Println("  - Obfuscating constants...")
+	ObfuscateConstants(file)
+	return nil
+}
+
 // --- New Type-Aware Pass ---
 
 // (This is now defined in data_flow.go)
@@ -75,12 +83,13 @@ type Config struct {
 	InsertDeadCode       bool
 	ObfuscateControlFlow bool
 	ObfuscateExpressions bool
+	ObfuscateConstants   bool // New flag
 	ObfuscateDataFlow    bool // New flag
 }
 
 type Obfuscator struct {
-	syntaxPasses     []Pass
-	typeAwarePasses  []TypeAwarePass
+	syntaxPasses    []Pass
+	typeAwarePasses []TypeAwarePass
 }
 
 func NewObfuscator(cfg *Config) *Obfuscator {
@@ -94,6 +103,9 @@ func NewObfuscator(cfg *Config) *Obfuscator {
 	// Data flow obfuscation should run before other things that might break type analysis.
 	if cfg.ObfuscateDataFlow {
 		typeAwarePasses = append(typeAwarePasses, &DataFlowPass{})
+	}
+	if cfg.ObfuscateConstants {
+		syntaxPasses = append(syntaxPasses, &constantPass{})
 	}
 	if cfg.ObfuscateExpressions {
 		syntaxPasses = append(syntaxPasses, &expressionPass{})
