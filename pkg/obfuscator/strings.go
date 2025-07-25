@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"fmt"
 	"go/ast"
 	"go/token"
 	"log"
@@ -12,26 +13,16 @@ import (
 	"golang.org/x/tools/go/ast/astutil"
 )
 
-// StringEncryptionPass handles the string encryption process using AES-CTR.
-type StringEncryptionPass struct {
-	EncryptedStrings []string // Holds all encrypted strings from the package.
-	Keys             [][]byte // Holds the AES key for each string.
-	IVs              [][]byte // Holds the IV for each string.
-}
+// StringEncryptionPass handles the inlined string encryption process using AES-CTR.
+type StringEncryptionPass struct{}
 
 // NewStringEncryptionPass creates a new pass instance.
 func NewStringEncryptionPass() *StringEncryptionPass {
 	return &StringEncryptionPass{}
 }
 
-// Apply finds all string literals, encrypts them, and replaces them with a call
-// to the global decryption function.
+// Apply finds string literals and replaces them with an inlined, self-decrypting block of code.
 func (p *StringEncryptionPass) Apply(obf *Obfuscator, fset *token.FileSet, file *ast.File) error {
-	// This pass should only run on the main package to ensure the decryption logic is present.
-	if file.Name.Name != "main" {
-		return nil
-	}
-
 	astutil.Apply(file, func(cursor *astutil.Cursor) bool {
 		node, ok := cursor.Node().(*ast.BasicLit)
 		if !ok || node.Kind != token.STRING {
@@ -47,7 +38,6 @@ func (p *StringEncryptionPass) Apply(obf *Obfuscator, fset *token.FileSet, file 
 				}
 			}
 		}
-
 		switch pt := parent.(type) {
 		case *ast.ImportSpec:
 			return true
@@ -64,40 +54,97 @@ func (p *StringEncryptionPass) Apply(obf *Obfuscator, fset *token.FileSet, file 
 		if len(node.Value) <= 2 {
 			return true
 		}
-
 		unquoted, err := strconv.Unquote(node.Value)
 		if err != nil {
 			return true
 		}
 
-		// Encrypt the string and store it.
-		encryptedData, key, iv := p.encryptStringAES(unquoted)
+		// Encrypt the string.
+		encryptedData, key, iv := encryptStringAES(unquoted)
 		if encryptedData == nil {
-			// Encryption failed, skip this string.
 			return true
 		}
-		stringIndex := len(p.EncryptedStrings)
-		p.EncryptedStrings = append(p.EncryptedStrings, string(encryptedData))
-		p.Keys = append(p.Keys, key)
-		p.IVs = append(p.IVs, iv)
 
-		// Create an expression to call the global decryption function.
-		callExpr := &ast.CallExpr{
-			Fun: ast.NewIdent(obf.StringDecryptionFuncName),
-			Args: []ast.Expr{
-				&ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(stringIndex)},
-			},
-		}
+		// Add necessary imports to the file.
+		astutil.AddImport(fset, file, "crypto/aes")
+		astutil.AddImport(fset, file, "crypto/cipher")
 
-		cursor.Replace(callExpr)
+		// Create the inlined decryptor.
+		decryptor := createInlineDecryptor(encryptedData, key, iv)
+		cursor.Replace(decryptor)
+
 		return false
 	}, nil)
 
 	return nil
 }
 
+// createInlineDecryptor generates an AST for a self-contained decryption block.
+// It returns a call to an anonymous function that performs decryption.
+func createInlineDecryptor(encryptedData, key, iv []byte) *ast.CallExpr {
+	// Helper to create a `[]byte` literal from data
+	createByteSliceLiteral := func(data []byte) *ast.CompositeLit {
+		slice := &ast.CompositeLit{Type: &ast.ArrayType{Elt: ast.NewIdent("byte")}}
+		for _, b := range data {
+			slice.Elts = append(slice.Elts, &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("0x%x", b)})
+		}
+		return slice
+	}
+
+	dataVar, keyVar, ivVar, blockVar, streamVar, resultVar, errVar :=
+		NewName(), NewName(), NewName(), NewName(), NewName(), NewName(), NewName()
+
+	return &ast.CallExpr{
+		Fun: &ast.FuncLit{
+			Type: &ast.FuncType{
+				Params:  &ast.FieldList{},
+				Results: &ast.FieldList{List: []*ast.Field{{Type: ast.NewIdent("string")}}},
+			},
+			Body: &ast.BlockStmt{
+				List: []ast.Stmt{
+					&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent(keyVar)}, Tok: token.DEFINE, Rhs: []ast.Expr{createByteSliceLiteral(key)}},
+					&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent(ivVar)}, Tok: token.DEFINE, Rhs: []ast.Expr{createByteSliceLiteral(iv)}},
+					&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent(dataVar)}, Tok: token.DEFINE, Rhs: []ast.Expr{createByteSliceLiteral(encryptedData)}},
+					&ast.AssignStmt{
+						Lhs: []ast.Expr{ast.NewIdent(blockVar), ast.NewIdent(errVar)}, Tok: token.DEFINE,
+						Rhs: []ast.Expr{&ast.CallExpr{
+							Fun:  &ast.SelectorExpr{X: ast.NewIdent("aes"), Sel: ast.NewIdent("NewCipher")},
+							Args: []ast.Expr{ast.NewIdent(keyVar)},
+						}},
+					},
+					&ast.IfStmt{
+						Cond: &ast.BinaryExpr{X: ast.NewIdent(errVar), Op: token.NEQ, Y: ast.NewIdent("nil")},
+						Body: &ast.BlockStmt{List: []ast.Stmt{
+							&ast.ExprStmt{X: &ast.CallExpr{Fun: ast.NewIdent("panic"), Args: []ast.Expr{ast.NewIdent(errVar)}}},
+						}},
+					},
+					&ast.AssignStmt{
+						Lhs: []ast.Expr{ast.NewIdent(resultVar)}, Tok: token.DEFINE,
+						Rhs: []ast.Expr{&ast.CallExpr{
+							Fun:  ast.NewIdent("make"),
+							Args: []ast.Expr{&ast.ArrayType{Elt: ast.NewIdent("byte")}, &ast.CallExpr{Fun: ast.NewIdent("len"), Args: []ast.Expr{ast.NewIdent(dataVar)}}},
+						}},
+					},
+					&ast.AssignStmt{
+						Lhs: []ast.Expr{ast.NewIdent(streamVar)}, Tok: token.DEFINE,
+						Rhs: []ast.Expr{&ast.CallExpr{
+							Fun:  &ast.SelectorExpr{X: ast.NewIdent("cipher"), Sel: ast.NewIdent("NewCTR")},
+							Args: []ast.Expr{ast.NewIdent(blockVar), ast.NewIdent(ivVar)},
+						}},
+					},
+					&ast.ExprStmt{X: &ast.CallExpr{
+						Fun:  &ast.SelectorExpr{X: ast.NewIdent(streamVar), Sel: ast.NewIdent("XORKeyStream")},
+						Args: []ast.Expr{ast.NewIdent(resultVar), ast.NewIdent(dataVar)},
+					}},
+					&ast.ReturnStmt{Results: []ast.Expr{&ast.CallExpr{Fun: ast.NewIdent("string"), Args: []ast.Expr{ast.NewIdent(resultVar)}}}},
+				},
+			},
+		},
+	}
+}
+
 // encryptStringAES performs AES-CTR encryption.
-func (p *StringEncryptionPass) encryptStringAES(s string) ([]byte, []byte, []byte) {
+func encryptStringAES(s string) ([]byte, []byte, []byte) {
 	key := make([]byte, 16) // AES-128
 	iv := make([]byte, 16)  // AES block size
 	if _, err := rand.Read(key); err != nil {
