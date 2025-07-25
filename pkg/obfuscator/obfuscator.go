@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -107,6 +108,7 @@ type Obfuscator struct {
 	StringDecryptionFuncName string
 	EncryptedStringsVarName  string
 	StringKeysVarName        string
+	StringIVsVarName         string // New variable for IVs
 	stringEncryption         *StringEncryptionPass
 }
 
@@ -116,6 +118,7 @@ func NewObfuscator(cfg *Config) *Obfuscator {
 		StringDecryptionFuncName: NewName(),
 		EncryptedStringsVarName:  NewName(),
 		StringKeysVarName:        NewName(),
+		StringIVsVarName:         NewName(), // Initialize new variable
 	}
 
 	// --- Pass Ordering ---
@@ -290,8 +293,24 @@ func ProcessDirectory(inputPath, outputPath string, cfg *Config) error {
 	return nil
 }
 
-// injectStringDecryptor adds the global variables and the decryption function to the file.
+// injectStringDecryptor adds the global variables and the AES decryption function to the file.
 func injectStringDecryptor(obf *Obfuscator, fset *token.FileSet, file *ast.File) {
+	astutil.AddImport(fset, file, "crypto/aes")
+	astutil.AddImport(fset, file, "crypto/cipher")
+
+	// Helper to create a `[][]byte` literal
+	createByteSliceLiteral := func(data [][]byte) *ast.CompositeLit {
+		slice := &ast.CompositeLit{Type: &ast.ArrayType{Elt: &ast.ArrayType{Elt: ast.NewIdent("byte")}}}
+		for _, d := range data {
+			byteSlice := &ast.CompositeLit{}
+			for _, b := range d {
+				byteSlice.Elts = append(byteSlice.Elts, &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("0x%x", b)})
+			}
+			slice.Elts = append(slice.Elts, byteSlice)
+		}
+		return slice
+	}
+
 	// 1. Create the global slice for encrypted strings
 	stringSlice := &ast.CompositeLit{Type: &ast.ArrayType{Elt: ast.NewIdent("string")}}
 	for _, s := range obf.stringEncryption.EncryptedStrings {
@@ -305,49 +324,34 @@ func injectStringDecryptor(obf *Obfuscator, fset *token.FileSet, file *ast.File)
 		}},
 	}
 
-	// 2. Create the global slice for decryption keys (slice of byte slices)
-	keySlice := &ast.CompositeLit{Type: &ast.ArrayType{Elt: &ast.ArrayType{Elt: ast.NewIdent("byte")}}}
-	for _, k := range obf.stringEncryption.StringKeys {
-		byteSlice := &ast.CompositeLit{}
-		for _, b := range k {
-			byteSlice.Elts = append(byteSlice.Elts, &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("0x%x", b)})
-		}
-		keySlice.Elts = append(keySlice.Elts, byteSlice)
-	}
+	// 2. Create global slices for keys and IVs
 	keysVar := &ast.GenDecl{
 		Tok: token.VAR,
 		Specs: []ast.Spec{&ast.ValueSpec{
 			Names:  []*ast.Ident{ast.NewIdent(obf.StringKeysVarName)},
-			Values: []ast.Expr{keySlice},
+			Values: []ast.Expr{createByteSliceLiteral(obf.stringEncryption.Keys)},
+		}},
+	}
+	ivsVar := &ast.GenDecl{
+		Tok: token.VAR,
+		Specs: []ast.Spec{&ast.ValueSpec{
+			Names:  []*ast.Ident{ast.NewIdent(obf.StringIVsVarName)},
+			Values: []ast.Expr{createByteSliceLiteral(obf.stringEncryption.IVs)},
 		}},
 	}
 
 	// 3. Create the decryption function
-	decryptionFunc := createDecryptorFunc(obf)
+	decryptionFunc := createAESDecryptorFunc(obf)
 
-	// 4. Add the new declarations to the top of the file (after imports).
-	decls := []ast.Decl{stringsVar, keysVar, decryptionFunc}
-
-	// Insert after the last import
-	lastImport := -1
-	for i, decl := range file.Decls {
-		if gen, ok := decl.(*ast.GenDecl); ok && gen.Tok == token.IMPORT {
-			lastImport = i
-		}
-	}
-	if lastImport != -1 {
-		file.Decls = append(file.Decls[:lastImport+1], append(decls, file.Decls[lastImport+1:]...)...)
-	} else {
-		// No imports, add at the beginning
-		file.Decls = append(decls, file.Decls...)
-	}
+	// 4. Add the new declarations to the file
+	file.Decls = append(file.Decls, stringsVar, keysVar, ivsVar, decryptionFunc)
 }
 
-// createDecryptorFunc builds the AST for the global string decryption function.
-// This function now implements a correct rolling XOR decryption.
-func createDecryptorFunc(obf *Obfuscator) *ast.FuncDecl {
+// createAESDecryptorFunc builds the AST for the AES-CTR decryption function.
+func createAESDecryptorFunc(obf *Obfuscator) *ast.FuncDecl {
 	indexParam := "i"
-	dataVar, keyVar, resultVar, iVar, bVar := NewName(), NewName(), NewName(), NewName(), NewName()
+	dataVar, keyVar, ivVar, blockVar, streamVar, resultVar, errVar :=
+		NewName(), NewName(), NewName(), NewName(), NewName(), NewName(), NewName()
 
 	return &ast.FuncDecl{
 		Name: ast.NewIdent(obf.StringDecryptionFuncName),
@@ -371,6 +375,26 @@ func createDecryptorFunc(obf *Obfuscator) *ast.FuncDecl {
 					Lhs: []ast.Expr{ast.NewIdent(keyVar)}, Tok: token.DEFINE,
 					Rhs: []ast.Expr{&ast.IndexExpr{X: ast.NewIdent(obf.StringKeysVarName), Index: ast.NewIdent(indexParam)}},
 				},
+				// iv := stringIVs[i]
+				&ast.AssignStmt{
+					Lhs: []ast.Expr{ast.NewIdent(ivVar)}, Tok: token.DEFINE,
+					Rhs: []ast.Expr{&ast.IndexExpr{X: ast.NewIdent(obf.StringIVsVarName), Index: ast.NewIdent(indexParam)}},
+				},
+				// block, err := aes.NewCipher(key)
+				&ast.AssignStmt{
+					Lhs: []ast.Expr{ast.NewIdent(blockVar), ast.NewIdent(errVar)}, Tok: token.DEFINE,
+					Rhs: []ast.Expr{&ast.CallExpr{
+						Fun:  &ast.SelectorExpr{X: ast.NewIdent("aes"), Sel: ast.NewIdent("NewCipher")},
+						Args: []ast.Expr{ast.NewIdent(keyVar)},
+					}},
+				},
+				// if err != nil { panic(err) }
+				&ast.IfStmt{
+					Cond: &ast.BinaryExpr{X: ast.NewIdent(errVar), Op: token.NEQ, Y: ast.NewIdent("nil")},
+					Body: &ast.BlockStmt{List: []ast.Stmt{
+						&ast.ExprStmt{X: &ast.CallExpr{Fun: ast.NewIdent("panic"), Args: []ast.Expr{ast.NewIdent(errVar)}}},
+					}},
+				},
 				// result := make([]byte, len(data))
 				&ast.AssignStmt{
 					Lhs: []ast.Expr{ast.NewIdent(resultVar)}, Tok: token.DEFINE,
@@ -379,31 +403,22 @@ func createDecryptorFunc(obf *Obfuscator) *ast.FuncDecl {
 						Args: []ast.Expr{&ast.ArrayType{Elt: ast.NewIdent("byte")}, &ast.CallExpr{Fun: ast.NewIdent("len"), Args: []ast.Expr{ast.NewIdent(dataVar)}}},
 					}},
 				},
-				// Rolling XOR decryption loop
-				// for i, b := range []byte(data) { result[i] = b ^ key[i % len(key)] }
-				&ast.RangeStmt{
-					Key: ast.NewIdent(iVar), Value: ast.NewIdent(bVar), Tok: token.DEFINE,
-					X: &ast.CallExpr{Fun: ast.NewIdent("[]byte"), Args: []ast.Expr{ast.NewIdent(dataVar)}},
-					Body: &ast.BlockStmt{
-						List: []ast.Stmt{
-							&ast.AssignStmt{
-								Lhs: []ast.Expr{&ast.IndexExpr{X: ast.NewIdent(resultVar), Index: ast.NewIdent(iVar)}}, Tok: token.ASSIGN,
-								Rhs: []ast.Expr{&ast.BinaryExpr{
-									X:  ast.NewIdent(bVar),
-									Op: token.XOR,
-									Y: &ast.IndexExpr{
-										X: ast.NewIdent(keyVar),
-										Index: &ast.BinaryExpr{
-											X:  ast.NewIdent(iVar),
-											Op: token.REM,
-											Y:  &ast.CallExpr{Fun: ast.NewIdent("len"), Args: []ast.Expr{ast.NewIdent(keyVar)}},
-										},
-									},
-								}},
-							},
-						},
-					},
+				// stream := cipher.NewCTR(block, iv)
+				&ast.AssignStmt{
+					Lhs: []ast.Expr{ast.NewIdent(streamVar)}, Tok: token.DEFINE,
+					Rhs: []ast.Expr{&ast.CallExpr{
+						Fun:  &ast.SelectorExpr{X: ast.NewIdent("cipher"), Sel: ast.NewIdent("NewCTR")},
+						Args: []ast.Expr{ast.NewIdent(blockVar), ast.NewIdent(ivVar)},
+					}},
 				},
+				// stream.XORKeyStream(result, []byte(data))
+				&ast.ExprStmt{X: &ast.CallExpr{
+					Fun: &ast.SelectorExpr{X: ast.NewIdent(streamVar), Sel: ast.NewIdent("XORKeyStream")},
+					Args: []ast.Expr{
+						ast.NewIdent(resultVar),
+						&ast.CallExpr{Fun: ast.NewIdent("[]byte"), Args: []ast.Expr{ast.NewIdent(dataVar)}},
+					},
+				}},
 				// return string(result)
 				&ast.ReturnStmt{Results: []ast.Expr{&ast.CallExpr{Fun: ast.NewIdent("string"), Args: []ast.Expr{ast.NewIdent(resultVar)}}}},
 			},
