@@ -26,24 +26,29 @@ func ObfuscateExpressions(file *ast.File, info *types.Info) {
 			return true
 		}
 
-		if t, ok := info.TypeOf(binaryExpr.X).(*types.Basic); ok {
-			if t.Info()&types.IsInteger == 0 {
-				return true
-			}
-		} else {
-			return true
-		}
-
 		var newExpr ast.Expr
 		template := randInt(2)
 
-		switch binaryExpr.Op {
-		case token.ADD:
-			newExpr = obfuscateAdd(binaryExpr.X, binaryExpr.Y, int(template))
-		case token.SUB:
-			newExpr = obfuscateSub(binaryExpr.X, binaryExpr.Y, int(template))
-		case token.XOR:
-			newExpr = obfuscateXor(binaryExpr.X, binaryExpr.Y, int(template))
+		// Check if it's an integer operation
+		if t, ok := info.TypeOf(binaryExpr.X).(*types.Basic); ok && t.Info()&types.IsInteger != 0 {
+			switch binaryExpr.Op {
+			case token.ADD:
+				newExpr = obfuscateAdd(binaryExpr.X, binaryExpr.Y, int(template))
+			case token.SUB:
+				newExpr = obfuscateSub(binaryExpr.X, binaryExpr.Y, int(template))
+			case token.XOR:
+				newExpr = obfuscateXor(binaryExpr.X, binaryExpr.Y, int(template))
+			}
+		}
+
+		// Check if it's a boolean operation
+		if t, ok := info.TypeOf(binaryExpr.X).(*types.Basic); ok && t.Info()&types.IsBoolean != 0 {
+			switch binaryExpr.Op {
+			case token.LAND:
+				newExpr = obfuscateLand(binaryExpr.X, binaryExpr.Y, int(template))
+			case token.LOR:
+				newExpr = obfuscateLor(binaryExpr.X, binaryExpr.Y, int(template))
+			}
 		}
 
 		if newExpr != nil {
@@ -119,7 +124,55 @@ func obfuscateXor(x, y ast.Expr, template int) ast.Expr {
 		return &ast.BinaryExpr{
 			X:  &ast.ParenExpr{X: &ast.BinaryExpr{X: x, Op: token.AND_NOT, Y: y}},
 			Op: token.OR,
-			Y:  &ast.ParenExpr{X: &ast.BinaryExpr{X: y, Op: token.AND_NOT, Y: x}},
+						Y:  &ast.ParenExpr{X: &ast.BinaryExpr{X: y, Op: token.AND_NOT, Y: x}},
+		}
+	}
+}
+
+func obfuscateLand(x, y ast.Expr, template int) ast.Expr {
+	switch template {
+	case 0:
+		// a && b -> !(!a || !b)
+		return &ast.UnaryExpr{
+			Op: token.NOT,
+			X: &ast.ParenExpr{
+				X: &ast.BinaryExpr{
+					X:  &ast.UnaryExpr{Op: token.NOT, X: x},
+					Op: token.LOR,
+					Y:  &ast.UnaryExpr{Op: token.NOT, X: y},
+				},
+			},
+		}
+	default:
+		// a && b -> a == b && a
+		return &ast.BinaryExpr{
+			X:  &ast.BinaryExpr{X: x, Op: token.EQL, Y: y},
+			Op: token.LAND,
+			Y:  x,
+		}
+	}
+}
+
+func obfuscateLor(x, y ast.Expr, template int) ast.Expr {
+	switch template {
+	case 0:
+		// a || b -> !(!a && !b)
+		return &ast.UnaryExpr{
+			Op: token.NOT,
+			X: &ast.ParenExpr{
+				X: &ast.BinaryExpr{
+					X:  &ast.UnaryExpr{Op: token.NOT, X: x},
+					Op: token.LAND,
+					Y:  &ast.UnaryExpr{Op: token.NOT, X: y},
+				},
+			},
+		}
+	default:
+		// a || b -> a != b || a
+		return &ast.BinaryExpr{
+			X:  &ast.BinaryExpr{X: x, Op: token.NEQ, Y: y},
+			Op: token.LOR,
+			Y:  x,
 		}
 	}
 }
