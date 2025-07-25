@@ -7,111 +7,125 @@ import (
 	"golang.org/x/tools/go/ast/astutil"
 )
 
-// AntiVMPass injects checks to detect if the code is running inside a virtual machine.
+// AntiVMPass injects checks to detect if the program is running inside a virtual machine.
+// The result of the check is stored in a global variable, which can be used by other
+// passes to alter the program's behavior (e.g., corrupting a decryption key).
 type AntiVMPass struct{}
 
+// Apply injects the anti-vm logic into the main package.
 func (p *AntiVMPass) Apply(fset *token.FileSet, file *ast.File) error {
+	// This pass should only run on the main package.
 	if file.Name.Name != "main" {
 		return nil
 	}
 
-	// This is a weak check to prevent multiple injections. A proper implementation
-	// would require a more robust mechanism to track applied passes.
-	for _, decl := range file.Decls {
-		if f, ok := decl.(*ast.FuncDecl); ok && len(f.Body.List) > 2 {
-			if as, ok := f.Body.List[2].(*ast.RangeStmt); ok {
-				if _, ok := as.X.(*ast.Ident); ok {
-					// Likely our function, let's skip. This is very heuristic.
-					return nil
-				}
-			}
-		}
+	// Check if we have already run this pass.
+	if isVarDeclared(file, vmCheckVarName) {
+		return nil
 	}
 
 	astutil.AddImport(fset, file, "net")
-	astutil.AddImport(fset, file, "os")
 	astutil.AddImport(fset, file, "strings")
 
-	checkFuncName := NewName()
-	// 1. Create the MAC address check function
-	checkFunc := &ast.FuncDecl{
-		Name: ast.NewIdent(checkFuncName),
-		Type: &ast.FuncType{Params: &ast.FieldList{}},
-		Body: &ast.BlockStmt{
-			List: []ast.Stmt{
-				// interfaces, err := net.Interfaces()
-				&ast.AssignStmt{
-					Lhs: []ast.Expr{ast.NewIdent("interfaces"), ast.NewIdent("err")},
-					Tok: token.DEFINE,
-					Rhs: []ast.Expr{&ast.CallExpr{
-						Fun: &ast.SelectorExpr{X: ast.NewIdent("net"), Sel: ast.NewIdent("Interfaces")},
-					}},
-				},
-				// if err != nil { return }
-				&ast.IfStmt{
-					Cond: &ast.BinaryExpr{X: ast.NewIdent("err"), Op: token.NEQ, Y: ast.NewIdent("nil")},
-					Body: &ast.BlockStmt{List: []ast.Stmt{&ast.ReturnStmt{}}},
-				},
-				// var vmPrefixes = []string{"00:05:69", "00:0c:29", "00:1c:14", "00:50:56", "08:00:27"}
-				&ast.DeclStmt{
-					Decl: &ast.GenDecl{
-						Tok: token.VAR,
-						Specs: []ast.Spec{
-							&ast.ValueSpec{
-								Names: []*ast.Ident{ast.NewIdent("vmPrefixes")},
-								Type:  &ast.ArrayType{Elt: ast.NewIdent("string")},
-								Values: []ast.Expr{
-									&ast.CompositeLit{
-										Type: &ast.ArrayType{Elt: ast.NewIdent("string")},
-										Elts: []ast.Expr{
-											&ast.BasicLit{Kind: token.STRING, Value: `"00:05:69"`}, // VMware
-											&ast.BasicLit{Kind: token.STRING, Value: `"00:0c:29"`}, // VMware
-											&ast.BasicLit{Kind: token.STRING, Value: `"00:1c:14"`}, // VMware
-											&ast.BasicLit{Kind: token.STRING, Value: `"00:50:56"`}, // VMware
-											&ast.BasicLit{Kind: token.STRING, Value: `"08:00:27"`}, // VirtualBox
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-				// for _, i := range interfaces { ... }
-				&ast.RangeStmt{
-					Key:   ast.NewIdent("_"),
-					Value: ast.NewIdent("i"),
-					Tok:   token.DEFINE,
-					X:     ast.NewIdent("interfaces"),
-					Body: &ast.BlockStmt{
-						List: []ast.Stmt{
-							// for _, prefix := range vmPrefixes { ... }
-							&ast.RangeStmt{
-								Key:   ast.NewIdent("_"),
-								Value: ast.NewIdent("prefix"),
-								Tok:   token.DEFINE,
-								X:     ast.NewIdent("vmPrefixes"),
-								Body: &ast.BlockStmt{
-									List: []ast.Stmt{
-										// if strings.HasPrefix(i.HardwareAddr.String(), prefix) { os.Exit(1) }
-										&ast.IfStmt{
-											Cond: &ast.CallExpr{
-												Fun: &ast.SelectorExpr{X: ast.NewIdent("strings"), Sel: ast.NewIdent("HasPrefix")},
-												Args: []ast.Expr{
-													&ast.CallExpr{
-														Fun: &ast.SelectorExpr{
-															X:   &ast.SelectorExpr{X: ast.NewIdent("i"), Sel: ast.NewIdent("HardwareAddr")},
-															Sel: ast.NewIdent("String"),
-														},
-													},
-													ast.NewIdent("prefix"),
-												},
+	// 1. Declare the global variable for the VM check result.
+	vmVarDecl := &ast.GenDecl{
+		Tok: token.VAR,
+		Specs: []ast.Spec{
+			&ast.ValueSpec{
+				Names:  []*ast.Ident{ast.NewIdent(vmCheckVarName)},
+				Type:   ast.NewIdent("int"),
+				Values: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "0"}},
+			},
+		},
+	}
+
+	// 2. Create the init function that performs the check.
+	initFunc := createVMCheckInitFunc()
+
+	// 3. Insert the new declarations after the last import.
+	insertDeclsAfterImports(file, []ast.Decl{vmVarDecl, initFunc})
+
+	return nil
+}
+
+// A randomly generated, unique name for the variable holding the VM check result.
+var vmCheckVarName = NewName()
+
+// createVMCheckInitFunc generates the AST for an init function that checks for VM indicators.
+func createVMCheckInitFunc() *ast.FuncDecl {
+	vmPrefixes := []string{
+		"00:05:69", "00:0c:29", "00:50:56", // VMware
+		"08:00:27", // VirtualBox
+		"00:1c:42", // Parallels
+		"00:16:3e", // Xen
+	}
+
+	var prefixLits []ast.Expr
+	for _, prefix := range vmPrefixes {
+		prefixLits = append(prefixLits, &ast.BasicLit{Kind: token.STRING, Value: "\"" + prefix + "\""})
+	}
+
+	doneLabel := ast.NewIdent("done")
+
+	// Build the body of the init function
+	initBody := &ast.BlockStmt{
+		List: []ast.Stmt{
+			&ast.AssignStmt{
+				Lhs: []ast.Expr{ast.NewIdent("pfx")},
+				Tok: token.DEFINE,
+				Rhs: []ast.Expr{&ast.CompositeLit{
+					Type: &ast.ArrayType{Elt: ast.NewIdent("string")},
+					Elts: prefixLits,
+				}},
+			},
+			&ast.AssignStmt{
+				Lhs: []ast.Expr{ast.NewIdent("ifs"), ast.NewIdent("err")},
+				Tok: token.DEFINE,
+				Rhs: []ast.Expr{&ast.CallExpr{
+					Fun: &ast.SelectorExpr{X: ast.NewIdent("net"), Sel: ast.NewIdent("Interfaces")},
+				}},
+			},
+			&ast.IfStmt{
+				Cond: &ast.BinaryExpr{X: ast.NewIdent("err"), Op: token.EQL, Y: ast.NewIdent("nil")},
+				Body: &ast.BlockStmt{
+					List: []ast.Stmt{
+						&ast.RangeStmt{
+							Key:   ast.NewIdent("_"),
+							Value: ast.NewIdent("i"),
+							Tok:   token.DEFINE,
+							X:     ast.NewIdent("ifs"),
+							Body: &ast.BlockStmt{
+								List: []ast.Stmt{
+									&ast.AssignStmt{
+										Lhs: []ast.Expr{ast.NewIdent("mac")},
+										Tok: token.DEFINE,
+										Rhs: []ast.Expr{&ast.CallExpr{
+											Fun: &ast.SelectorExpr{
+												X:   &ast.SelectorExpr{X: ast.NewIdent("i"), Sel: ast.NewIdent("HardwareAddr")},
+												Sel: ast.NewIdent("String"),
 											},
-											Body: &ast.BlockStmt{
-												List: []ast.Stmt{
-													&ast.ExprStmt{
-														X: &ast.CallExpr{
-															Fun:  &ast.SelectorExpr{X: ast.NewIdent("os"), Sel: ast.NewIdent("Exit")},
-															Args: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "1"}},
+										}},
+									},
+									&ast.RangeStmt{
+										Key:   ast.NewIdent("_"),
+										Value: ast.NewIdent("p"),
+										Tok:   token.DEFINE,
+										X:     ast.NewIdent("pfx"),
+										Body: &ast.BlockStmt{
+											List: []ast.Stmt{
+												&ast.IfStmt{
+													Cond: &ast.CallExpr{
+														Fun:  &ast.SelectorExpr{X: ast.NewIdent("strings"), Sel: ast.NewIdent("HasPrefix")},
+														Args: []ast.Expr{ast.NewIdent("mac"), ast.NewIdent("p")},
+													},
+													Body: &ast.BlockStmt{
+														List: []ast.Stmt{
+															&ast.AssignStmt{
+																Lhs: []ast.Expr{ast.NewIdent(vmCheckVarName)},
+																Tok: token.ASSIGN,
+																Rhs: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "1"}},
+															},
+															&ast.BranchStmt{Tok: token.GOTO, Label: doneLabel},
 														},
 													},
 												},
@@ -124,35 +138,16 @@ func (p *AntiVMPass) Apply(fset *token.FileSet, file *ast.File) error {
 					},
 				},
 			},
+			&ast.LabeledStmt{
+				Label: doneLabel,
+				Stmt:  &ast.EmptyStmt{},
+			},
 		},
 	}
 
-	// 2. Create or find an init function to call the check.
-	var initFunc *ast.FuncDecl
-	for _, decl := range file.Decls {
-		if f, ok := decl.(*ast.FuncDecl); ok && f.Name.Name == "init" {
-			initFunc = f
-			break
-		}
+	return &ast.FuncDecl{
+		Name: ast.NewIdent("init"),
+		Type: &ast.FuncType{Params: &ast.FieldList{}},
+		Body: initBody,
 	}
-
-	// If no init function exists, create one.
-	if initFunc == nil {
-		initFunc = &ast.FuncDecl{
-			Name: ast.NewIdent("init"),
-			Type: &ast.FuncType{Params: &ast.FieldList{}},
-			Body: &ast.BlockStmt{},
-		}
-		// Add the new init function to the file's declarations
-		file.Decls = append(file.Decls, initFunc)
-	}
-
-	// 3. Add the call to the check function at the beginning of the init function's body.
-	callStmt := &ast.ExprStmt{X: &ast.CallExpr{Fun: ast.NewIdent(checkFuncName)}}
-	initFunc.Body.List = append([]ast.Stmt{callStmt}, initFunc.Body.List...)
-
-	// 4. Add the check function itself to the file's declarations.
-	file.Decls = append(file.Decls, checkFunc)
-
-	return nil
 }

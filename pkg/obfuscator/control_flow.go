@@ -11,7 +11,8 @@ import (
 	"golang.org/x/tools/go/ast/astutil"
 )
 
-// ControlFlow flattens the control flow of function bodies.
+// ControlFlow flattens the control flow of function bodies using a switch-based dispatcher,
+// enhanced with opaque predicates to create junk code paths.
 func ControlFlow(f *ast.File, info *types.Info) {
 	astutil.Apply(f, func(cursor *astutil.Cursor) bool {
 		funcDecl, ok := cursor.Node().(*ast.FuncDecl)
@@ -19,7 +20,8 @@ func ControlFlow(f *ast.File, info *types.Info) {
 			return true
 		}
 
-		if funcDecl.Name.Name == "main" || funcDecl.Name.Name == "init" {
+		// Avoid flattening critical or tiny functions
+		if funcDecl.Name.Name == "main" || funcDecl.Name.Name == "init" || len(funcDecl.Body.List) < 3 {
 			return true
 		}
 
@@ -29,7 +31,6 @@ func ControlFlow(f *ast.File, info *types.Info) {
 		}
 
 		funcDecl.Body = newBody
-		fmt.Printf("    - Flattened control flow for function %s\n", funcDecl.Name.Name)
 		return false
 	}, nil)
 }
@@ -39,13 +40,16 @@ type BasicBlock struct {
 	Stmts []ast.Stmt
 }
 
-func flattenFunctionBody(fn *ast.FuncDecl, info *types.Info) (*ast.BlockStmt, error) {
-	if len(fn.Body.List) <= 1 {
-		return nil, fmt.Errorf("not enough statements to flatten")
-	}
+// hoistedVar represents a variable that has been hoisted to the top of the function.
+type hoistedVar struct {
+	OriginalName string
+	NewName      string
+	Type         ast.Expr
+}
 
-	// 1. Hoist all variable declarations to the top of the function.
-	hoistedVars, hoistedDecls := hoistVariables(fn.Body, info)
+func flattenFunctionBody(fn *ast.FuncDecl, info *types.Info) (*ast.BlockStmt, error) {
+	// 1. Hoist all variable declarations to the top of the function and rename them.
+	hoistedVars, hoistedDecls := hoistAndRenameVariables(fn.Body, info)
 
 	// 2. Decompose the function body into basic blocks.
 	blocks := decomposeToBasicBlocks(fn.Body.List)
@@ -77,6 +81,9 @@ func flattenFunctionBody(fn *ast.FuncDecl, info *types.Info) (*ast.BlockStmt, er
 		blocks[i].Stmts = rewriteBlock(blocks[i].Stmts, stateVar, nextState, exitState, returnVars, hoistedVars)
 	}
 
+	// 4. Create junk cases using opaque predicates.
+	junkCases := createJunkCases(len(blocks), len(blocks)+5)
+
 	rand.Shuffle(len(blocks), func(i, j int) { blocks[i], blocks[j] = blocks[j], blocks[i] })
 	var cases []ast.Stmt
 	for _, block := range blocks {
@@ -85,8 +92,9 @@ func flattenFunctionBody(fn *ast.FuncDecl, info *types.Info) (*ast.BlockStmt, er
 			Body: block.Stmts,
 		})
 	}
+	cases = append(cases, junkCases...)
 
-	// 4. Assemble the new body.
+	// 5. Assemble the new body.
 	newBody := &ast.BlockStmt{}
 	newBody.List = append(newBody.List, hoistedDecls...)
 	newBody.List = append(newBody.List, returnStmts...)
@@ -111,35 +119,72 @@ func flattenFunctionBody(fn *ast.FuncDecl, info *types.Info) (*ast.BlockStmt, er
 	return newBody, nil
 }
 
-func hoistVariables(body *ast.BlockStmt, info *types.Info) (map[string]bool, []ast.Stmt) {
-	vars := make(map[string]bool)
+func createJunkCases(startID, count int) []ast.Stmt {
+	var junkCases []ast.Stmt
+	for i := 0; i < count; i++ {
+		junkID := startID + i
+		junkVar := NewName()
+		junkCases = append(junkCases, &ast.CaseClause{
+			List: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(junkID)}},
+			Body: []ast.Stmt{
+				&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent(junkVar)}, Tok: token.DEFINE, Rhs: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "123"}}},
+				&ast.IfStmt{
+					Cond: &ast.BinaryExpr{
+						X:  &ast.BinaryExpr{X: ast.NewIdent(junkVar), Op: token.MUL, Y: ast.NewIdent(junkVar)},
+						Op: token.LSS,
+						Y:  &ast.BasicLit{Kind: token.INT, Value: "0"},
+					},
+					Body: &ast.BlockStmt{List: []ast.Stmt{
+						&ast.ExprStmt{X: &ast.CallExpr{Fun: ast.NewIdent("panic"), Args: []ast.Expr{&ast.BasicLit{Kind: token.STRING, Value: "\"unreachable\""}}}},
+					}},
+				},
+			},
+		})
+	}
+	return junkCases
+}
+
+func hoistAndRenameVariables(body *ast.BlockStmt, info *types.Info) (map[string]*hoistedVar, []ast.Stmt) {
+	vars := make(map[string]*hoistedVar)
 	var decls []ast.Stmt
-	ast.Inspect(body, func(n ast.Node) bool {
-		if assign, ok := n.(*ast.AssignStmt); ok && assign.Tok == token.DEFINE {
-			for _, lhs := range assign.Lhs {
-				if ident, ok := lhs.(*ast.Ident); ok {
-					if !vars[ident.Name] {
-						vars[ident.Name] = true
-						var varType ast.Expr
-						if info != nil && info.TypeOf(ident) != nil {
-							varType = ast.NewIdent(info.TypeOf(ident).String())
-						} else {
-							varType = ast.NewIdent("interface{}")
-						}
-						decls = append(decls, &ast.DeclStmt{
-							Decl: &ast.GenDecl{Tok: token.VAR, Specs: []ast.Spec{
-								&ast.ValueSpec{
-									Names: []*ast.Ident{ast.NewIdent(ident.Name)},
-									Type:  varType,
-								},
-							}},
-						})
+
+	astutil.Apply(body, func(cursor *astutil.Cursor) bool {
+		assign, ok := cursor.Node().(*ast.AssignStmt)
+		if !ok || assign.Tok != token.DEFINE {
+			return true
+		}
+
+		for _, lhs := range assign.Lhs {
+			if ident, ok := lhs.(*ast.Ident); ok {
+				if _, exists := vars[ident.Name]; !exists {
+					var varType ast.Expr
+					if info != nil && info.TypeOf(ident) != nil {
+						varType = ast.NewIdent(info.TypeOf(ident).String())
+					} else {
+						varType = ast.NewIdent("interface{}")
 					}
+					newVar := &hoistedVar{
+						OriginalName: ident.Name,
+						NewName:      NewName(),
+						Type:         varType,
+					}
+					vars[ident.Name] = newVar
+					decls = append(decls, &ast.DeclStmt{
+						Decl: &ast.GenDecl{Tok: token.VAR, Specs: []ast.Spec{
+							&ast.ValueSpec{
+								Names: []*ast.Ident{ast.NewIdent(newVar.NewName)},
+								Type:  newVar.Type,
+							},
+						}},
+					})
 				}
 			}
 		}
+
+		assign.Tok = token.ASSIGN
 		return true
-	})
+	}, nil)
+
 	return vars, decls
 }
 
@@ -161,30 +206,23 @@ func decomposeToBasicBlocks(stmts []ast.Stmt) []BasicBlock {
 
 func isBlockTerminal(stmt ast.Stmt) bool {
 	switch stmt.(type) {
-	case *ast.ReturnStmt, *ast.IfStmt, *ast.ForStmt, *ast.SwitchStmt:
+	case *ast.ReturnStmt, *ast.IfStmt, *ast.ForStmt, *ast.SwitchStmt, *ast.RangeStmt:
 		return true
 	default:
 		return false
 	}
 }
 
-func rewriteBlock(stmts []ast.Stmt, stateVar *ast.Ident, nextState, exitState int, returnVars []*ast.Ident, hoistedVars map[string]bool) []ast.Stmt {
-	// Convert `:=` to `=` for hoisted variables.
-	ast.Inspect(&ast.BlockStmt{List: stmts}, func(n ast.Node) bool {
-		if assign, ok := n.(*ast.AssignStmt); ok && assign.Tok == token.DEFINE {
-			isHoisted := true
-			for _, lhs := range assign.Lhs {
-				if ident, ok := lhs.(*ast.Ident); !ok || !hoistedVars[ident.Name] {
-					isHoisted = false
-					break
-				}
-			}
-			if isHoisted {
-				assign.Tok = token.ASSIGN
+func rewriteBlock(stmts []ast.Stmt, stateVar *ast.Ident, nextState, exitState int, returnVars []*ast.Ident, hoistedVars map[string]*hoistedVar) []ast.Stmt {
+	astutil.Apply(&ast.BlockStmt{List: stmts}, func(cursor *astutil.Cursor) bool {
+		ident, ok := cursor.Node().(*ast.Ident)
+		if ok {
+			if hv, exists := hoistedVars[ident.Name]; exists {
+				ident.Name = hv.NewName
 			}
 		}
 		return true
-	})
+	}, nil)
 
 	lastStmt := stmts[len(stmts)-1]
 	switch s := lastStmt.(type) {

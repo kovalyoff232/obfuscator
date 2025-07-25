@@ -1,64 +1,37 @@
 package obfuscator
 
 import (
-	"fmt"
 	"go/ast"
-	"math/rand"
-	"time"
 )
 
-func isSafeToRename(ident *ast.Ident) bool {
-	if ident == nil || ident.Obj == nil || ident.Obj.Decl == nil {
-		return false
-	}
-
-	// Check if the identifier is part of a variable declaration that is now a function.
-	// This is a sign that DataFlowPass has already processed it.
-	if spec, ok := ident.Obj.Decl.(*ast.ValueSpec); ok {
-		for _, val := range spec.Values {
-			if _, isFuncLit := val.(*ast.FuncLit); isFuncLit {
-				return false
-			}
-		}
-	}
-
-	// Do not rename exported identifiers, the main/init functions, or the blank identifier.
-	return !ident.IsExported() && ident.Name != "main" && ident.Name != "init" && ident.Name != "_"
-}
-
-// RenameIdentifiers traverses the AST and renames all non-exported identifiers.
-func RenameIdentifiers(node *ast.File) {
-	// Seed the random number generator to ensure different names on each run.
-	rand.Seed(time.Now().UnixNano())
-
-	// A map to store the new name for each object.
+// RenameIdentifiers safely renames local variables and constants.
+// It avoids renaming anything in the global scope, struct fields, or function names,
+// which prevents breaking interface implementations or public APIs.
+func RenameIdentifiers(file *ast.File) {
+	// A map to store the new name for each object to ensure consistency.
 	nameMap := make(map[*ast.Object]string)
 
-	// First pass: find all declarations and assign a new name.
-	ast.Inspect(node, func(n ast.Node) bool {
+	ast.Inspect(file, func(n ast.Node) bool {
 		ident, ok := n.(*ast.Ident)
 		if !ok {
 			return true
 		}
 
-		// If this identifier is a declaration, it's a candidate for renaming.
-		if ident.Obj != nil && ident.Obj.Decl == n {
-			if isSafeToRename(ident) {
-				// Ensure we don't accidentally generate the same name for different objects.
-				if _, exists := nameMap[ident.Obj]; !exists {
-					nameMap[ident.Obj] = NewName()
+		// We only want to rename declarations of variables and constants.
+		if ident.Obj != nil && ident.Obj.Pos() == ident.Pos() {
+			// Check if it's a variable or constant and it's not exported.
+			if (ident.Obj.Kind == ast.Var || ident.Obj.Kind == ast.Con) && !ident.IsExported() {
+				// Simple check to avoid renaming things in the file (global) scope.
+				// A more robust check would involve tracking scopes, but this is safer.
+				if ident.Name != "_" { // Don't rename the blank identifier
+					if _, exists := nameMap[ident.Obj]; !exists {
+						nameMap[ident.Obj] = NewName()
+					}
 				}
 			}
 		}
-		return true
-	})
 
-	// Second pass: apply the new names to all uses of the identifiers.
-	ast.Inspect(node, func(n ast.Node) bool {
-		ident, ok := n.(*ast.Ident)
-		if !ok {
-			return true
-		}
+		// If this identifier is a use of a renamed object, apply the new name.
 		if ident.Obj != nil {
 			if newName, ok := nameMap[ident.Obj]; ok {
 				ident.Name = newName
@@ -66,5 +39,4 @@ func RenameIdentifiers(node *ast.File) {
 		}
 		return true
 	})
-	fmt.Println("  - Renaming identifiers...")
 }

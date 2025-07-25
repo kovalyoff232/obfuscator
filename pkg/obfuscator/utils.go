@@ -1,25 +1,62 @@
 package obfuscator
 
-import "math/rand"
+import (
+	"go/ast"
+	"go/token"
+	"math/rand"
+	"time"
+)
 
-const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+const (
+	charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+)
 
-// NewName generates a random string that is a valid Go identifier.
-// It ensures the first character is a letter.
+var seededRand *rand.Rand = rand.New(rand.NewSource(time.Now().UnixNano()))
+
+// NewName generates a new random identifier.
 func NewName() string {
-	const minLength = 8
-	const maxLength = 16
-
-	length := rand.Intn(maxLength-minLength+1) + minLength
-	b := make([]byte, length)
-
-	// First character must be a letter
-	b[0] = letters[rand.Intn(len(letters))]
-
-	// Subsequent characters can be letters or numbers
-	for i := 1; i < length; i++ {
-		b[i] = chars[rand.Intn(len(chars))]
+	b := make([]byte, 10)
+	for i := range b {
+		b[i] = charset[seededRand.Intn(len(charset))]
 	}
-	return string(b)
+	// Identifiers in Go cannot start with a number, but our charset doesn't have numbers.
+	// We'll start it with a letter to be safe.
+	return "o_" + string(b)
+}
+
+// isVarDeclared checks if a variable with the given name is already declared in the file.
+func isVarDeclared(file *ast.File, varName string) bool {
+	for _, decl := range file.Decls {
+		if gd, ok := decl.(*ast.GenDecl); ok {
+			for _, spec := range gd.Specs {
+				if vs, ok := spec.(*ast.ValueSpec); ok {
+					for _, name := range vs.Names {
+						if name.Name == varName {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// insertDeclsAfterImports finds the last import declaration and inserts the new
+// declarations right after it.
+func insertDeclsAfterImports(file *ast.File, decls []ast.Decl) {
+	lastImportIndex := -1
+	for i, decl := range file.Decls {
+		if gd, ok := decl.(*ast.GenDecl); ok && gd.Tok == token.IMPORT {
+			lastImportIndex = i
+		}
+	}
+
+	if lastImportIndex != -1 {
+		// Insert after the last import
+		file.Decls = append(file.Decls[:lastImportIndex+1], append(decls, file.Decls[lastImportIndex+1:]...)...)
+	} else {
+		// If no imports, add to the top of the file.
+		file.Decls = append(decls, file.Decls...)
+	}
 }
