@@ -1,72 +1,83 @@
 package obfuscator
 
 import (
+	"crypto/rand"
 	"fmt"
 	"go/ast"
 	"go/token"
-	"math/rand"
+	"math/big"
 	"strconv"
 
 	"golang.org/x/tools/go/ast/astutil"
 )
 
 // ObfuscateConstants traverses the AST and replaces integer literals with
-// equivalent binary expressions to hide the original values.
+// more complex, functionally equivalent expressions.
 func ObfuscateConstants(file *ast.File) {
 	astutil.Apply(file, func(cursor *astutil.Cursor) bool {
 		node := cursor.Node()
 
-		// We are interested in basic literals, specifically integers.
 		lit, ok := node.(*ast.BasicLit)
 		if !ok || lit.Kind != token.INT {
-			return true // Continue traversal.
+			return true
 		}
 
-		// It's crucial to avoid obfuscating constants in 'const' declarations,
-		// as they often require a value that can be evaluated at compile time.
-		// Our generated expressions can only be evaluated at runtime.
+		// New check: Do not obfuscate integers inside a byte slice literal.
+		if isInsideByteSlice(cursor) {
+			return true
+		}
+
 		if isInsideConstDecl(file, cursor) {
-			return true // Skip this one, but continue.
+			return true
 		}
 
-		// Don't obfuscate with a 100% probability.
-		if rand.Intn(100) < 50 {
+		if randInt(100) < 50 {
 			return true
 		}
 
 		val, err := strconv.ParseInt(lit.Value, 0, 64)
 		if err != nil {
-			return true // Not a valid integer, skip.
+			return true
 		}
 
-		// Avoid obfuscating small, common numbers like 0, 1, 2.
 		if val >= -2 && val <= 2 {
 			return true
 		}
 
-		// Replace the integer literal with a generated expression.
 		newNode := generateObfuscatedIntExpr(val)
 		cursor.Replace(newNode)
 
-		// We replaced the node, so we should not traverse its children
-		// because the new node is already obfuscated.
 		return false
 	}, nil)
 }
 
-// isInsideConstDecl checks if the cursor's current position is inside a 'const' block.
-func isInsideConstDecl(file *ast.File, cursor *astutil.Cursor) bool {
-	// astutil.PathEnclosingInterval is the correct way to get the chain of nodes
-	// from the root of the AST to the current node's position.
-	path, _ := astutil.PathEnclosingInterval(file, cursor.Node().Pos(), cursor.Node().End())
-	if path == nil {
-		return false // Should not happen in practice
+// isInsideByteSlice checks if the cursor's current position is inside a byte slice literal.
+func isInsideByteSlice(cursor *astutil.Cursor) bool {
+	// A composite literal is something like `[]byte{1, 2, 3}`.
+	// We check if the parent node is a composite literal.
+	compLit, ok := cursor.Parent().(*ast.CompositeLit)
+	if !ok {
+		return false
 	}
 
-	// We iterate over the path (from the current node up to the root)
-	// to see if any of the parent nodes is a 'const' declaration.
+	// If it is, we check its type.
+	// The type for `[]byte` is an ArrayType with Elt being an Ident with name "byte".
+	if arrayType, ok := compLit.Type.(*ast.ArrayType); ok {
+		if ident, ok := arrayType.Elt.(*ast.Ident); ok {
+			return ident.Name == "byte"
+		}
+	}
+	return false
+}
+
+// isInsideConstDecl checks if the cursor's current position is inside a 'const' block.
+func isInsideConstDecl(file *ast.File, cursor *astutil.Cursor) bool {
+	path, _ := astutil.PathEnclosingInterval(file, cursor.Node().Pos(), cursor.Node().End())
+	if path == nil {
+		return false
+	}
+
 	for _, node := range path {
-		// A GenDecl (generic declaration) with the token CONST represents a const block.
 		if decl, ok := node.(*ast.GenDecl); ok && decl.Tok == token.CONST {
 			return true
 		}
@@ -76,26 +87,13 @@ func isInsideConstDecl(file *ast.File, cursor *astutil.Cursor) bool {
 
 // generateObfuscatedIntExpr creates a binary expression that evaluates to the original value.
 func generateObfuscatedIntExpr(val int64) ast.Expr {
-	k := rand.Int63n(1000) + 1 // A random integer to use in the expression.
+	k := randInt(1000) + 1 // A random integer to use in the expression.
 
-	// Randomly choose one of the obfuscation techniques.
-	method := rand.Intn(3) // Increased to 3 for more variety
+	// Randomly choose one of the reliable obfuscation techniques.
+	method := randInt(2)
 	switch method {
 	case 0:
-		// Technique 1: val => (val + k) - k
-		return &ast.BinaryExpr{
-			X: &ast.ParenExpr{
-				X: &ast.BinaryExpr{
-					X:  &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("%d", val)},
-					Op: token.ADD,
-					Y:  &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("%d", k)},
-				},
-			},
-			Op: token.SUB,
-			Y:  &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("%d", k)},
-		}
-	case 1:
-		// Technique 2: val => (val ^ k) ^ k
+		// Technique 1: val => (val ^ k) ^ k
 		// This is a robust method using the properties of XOR.
 		return &ast.BinaryExpr{
 			X: &ast.ParenExpr{
@@ -108,21 +106,30 @@ func generateObfuscatedIntExpr(val int64) ast.Expr {
 			Op: token.XOR,
 			Y:  &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("%d", k)},
 		}
-	case 2:
-		// Technique 3: val => (val - k) + k
+	case 1:
+		// Technique 2: val => (val + k) - k
 		return &ast.BinaryExpr{
 			X: &ast.ParenExpr{
 				X: &ast.BinaryExpr{
 					X:  &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("%d", val)},
-					Op: token.SUB,
+					Op: token.ADD,
 					Y:  &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("%d", k)},
 				},
 			},
-			Op: token.ADD,
+			Op: token.SUB,
 			Y:  &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("%d", k)},
 		}
 	default:
 		// Fallback, should not be reached.
 		return &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("%d", val)}
 	}
+}
+
+// randInt generates a cryptographically random integer up to a max value.
+func randInt(max int64) int64 {
+	n, err := rand.Int(rand.Reader, big.NewInt(max))
+	if err != nil {
+		return max / 2 // Fallback
+	}
+	return n.Int64()
 }

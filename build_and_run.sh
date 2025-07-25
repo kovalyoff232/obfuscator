@@ -1,7 +1,5 @@
 #!/bin/bash
 
-export VT_API_KEY='93d38060166cefe2b415667a010a7cedec7be98db5070b3f359c46f06f3ff5a5'
-
 echo "Сборка проекта..."
 go build -ldflags="-s -w" -o obfuscator_cli .
 if [ $? -ne 0 ]; then

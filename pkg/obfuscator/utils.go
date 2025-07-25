@@ -1,23 +1,27 @@
 package obfuscator
 
 import (
+	"crypto/rand"
 	"go/ast"
 	"go/token"
-	"math/rand"
-	"time"
+	"math/big"
 )
 
 const (
 	charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 )
 
-var seededRand *rand.Rand = rand.New(rand.NewSource(time.Now().UnixNano()))
-
-// NewName generates a new random identifier.
+// NewName generates a new cryptographically random identifier.
 func NewName() string {
 	b := make([]byte, 10)
 	for i := range b {
-		b[i] = charset[seededRand.Intn(len(charset))]
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
+		if err != nil {
+			// Fallback to a less random method in case of error
+			b[i] = charset[i%len(charset)]
+		} else {
+			b[i] = charset[n.Int64()]
+		}
 	}
 	// Identifiers in Go cannot start with a number, but our charset doesn't have numbers.
 	// We'll start it with a letter to be safe.
