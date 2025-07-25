@@ -25,7 +25,6 @@ func (p *AntiDebugPass) Apply(obf *Obfuscator, fset *token.FileSet, file *ast.Fi
 		return nil
 	}
 
-	astutil.AddImport(fset, file, "time")
 	astutil.AddImport(fset, file, "syscall")
 	astutil.AddImport(fset, file, "runtime")
 
@@ -51,18 +50,6 @@ func (p *AntiDebugPass) Apply(obf *Obfuscator, fset *token.FileSet, file *ast.Fi
 
 // createAntiDebugInitFunc generates the AST for an init function that combines multiple checks.
 func createAntiDebugInitFunc(obf *Obfuscator) *ast.FuncDecl {
-	// --- Time-based check ---
-	timeComponentExpr := &ast.BinaryExpr{
-		X: &ast.CallExpr{
-			Fun: &ast.SelectorExpr{
-				X:   &ast.CallExpr{Fun: &ast.SelectorExpr{X: ast.NewIdent("time"), Sel: ast.NewIdent("Now")}},
-				Sel: ast.NewIdent("UnixNano"),
-			},
-		},
-		Op: token.SUB,
-		Y:  ast.NewIdent("t"),
-	}
-
 	// --- Ptrace check (Linux specific, wrapped for cross-platform compilation) ---
 	ptraceCheck := &ast.IfStmt{
 		Cond: &ast.BinaryExpr{
@@ -96,16 +83,13 @@ func createAntiDebugInitFunc(obf *Obfuscator) *ast.FuncDecl {
 	}
 
 	// --- Final key calculation ---
+	// The key is now based on stable checks (ptrace, vm)
 	finalCalc := &ast.AssignStmt{
 		Lhs: []ast.Expr{ast.NewIdent(obf.WeavingKeyVarName)},
 		Tok: token.ASSIGN,
 		Rhs: []ast.Expr{
 			&ast.BinaryExpr{
-				X: &ast.BinaryExpr{
-					X:  ast.NewIdent("timeComponent"),
-					Op: token.ADD,
-					Y:  ast.NewIdent("ptraceComponent"),
-				},
+				X:  ast.NewIdent("ptraceComponent"),
 				Op: token.ADD,
 				Y: &ast.BinaryExpr{
 					X: &ast.CallExpr{
@@ -130,14 +114,6 @@ func createAntiDebugInitFunc(obf *Obfuscator) *ast.FuncDecl {
 					Values: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "0"}},
 				},
 			}}},
-			&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent("t")}, Tok: token.DEFINE, Rhs: []ast.Expr{&ast.CallExpr{Fun: &ast.SelectorExpr{X: &ast.CallExpr{Fun: &ast.SelectorExpr{X: ast.NewIdent("time"), Sel: ast.NewIdent("Now")}}, Sel: ast.NewIdent("UnixNano")}}}},
-			&ast.ForStmt{
-				Init: &ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent("i")}, Tok: token.DEFINE, Rhs: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "0"}}},
-				Cond: &ast.BinaryExpr{X: ast.NewIdent("i"), Op: token.LSS, Y: &ast.BasicLit{Kind: token.INT, Value: "100"}},
-				Post: &ast.IncDecStmt{X: ast.NewIdent("i"), Tok: token.INC},
-				Body: &ast.BlockStmt{List: []ast.Stmt{&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent("_")}, Tok: token.ASSIGN, Rhs: []ast.Expr{ast.NewIdent("i")}}}},
-			},
-			&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent("timeComponent")}, Tok: token.DEFINE, Rhs: []ast.Expr{timeComponentExpr}},
 			ptraceCheck,
 			finalCalc,
 		},

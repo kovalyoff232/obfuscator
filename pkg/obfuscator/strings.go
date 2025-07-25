@@ -72,7 +72,7 @@ func (p *StringEncryptionPass) Apply(obf *Obfuscator, fset *token.FileSet, file 
 		astutil.AddImport(fset, file, "crypto/aes")
 		astutil.AddImport(fset, file, "crypto/cipher")
 
-		decryptor := p.createMetamorphicDecryptor(encryptedData, key, iv)
+		decryptor := p.createMetamorphicDecryptor(obf, encryptedData, key, iv)
 		cursor.Replace(decryptor)
 
 		return false
@@ -82,7 +82,7 @@ func (p *StringEncryptionPass) Apply(obf *Obfuscator, fset *token.FileSet, file 
 }
 
 // createMetamorphicDecryptor generates a varied AST for a self-contained decryption block.
-func (p *StringEncryptionPass) createMetamorphicDecryptor(encryptedData, key, iv []byte) *ast.CallExpr {
+func (p *StringEncryptionPass) createMetamorphicDecryptor(obf *Obfuscator, encryptedData, key, iv []byte) *ast.CallExpr {
 	createByteSliceLiteral := func(data []byte) *ast.CompositeLit {
 		slice := &ast.CompositeLit{Type: &ast.ArrayType{Elt: ast.NewIdent("byte")}}
 		for _, b := range data {
@@ -91,8 +91,43 @@ func (p *StringEncryptionPass) createMetamorphicDecryptor(encryptedData, key, iv
 		return slice
 	}
 
-	dataVar, keyVar, ivVar, blockVar, streamVar, resultVar, errVar :=
-		NewName(), NewName(), NewName(), NewName(), NewName(), NewName(), NewName()
+	dataVar, keyVar, ivVar, blockVar, streamVar, resultVar, errVar, iVar :=
+		NewName(), NewName(), NewName(), NewName(), NewName(), NewName(), NewName(), NewName()
+
+	// --- Key Weaving Logic ---
+	// This is the core of the improvement. The key used for decryption is modified
+	// at runtime using the result of the anti-debugging checks.
+	keyWeavingLoop := &ast.ForStmt{
+		Init: &ast.AssignStmt{
+			Lhs: []ast.Expr{ast.NewIdent(iVar)}, Tok: token.DEFINE,
+			Rhs: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "0"}},
+		},
+		Cond: &ast.BinaryExpr{
+			X:  ast.NewIdent(iVar),
+			Op: token.LSS,
+			Y:  &ast.CallExpr{Fun: ast.NewIdent("len"), Args: []ast.Expr{ast.NewIdent(keyVar)}},
+		},
+		Post: &ast.IncDecStmt{X: ast.NewIdent(iVar), Tok: token.INC},
+		Body: &ast.BlockStmt{List: []ast.Stmt{
+			&ast.AssignStmt{
+				Lhs: []ast.Expr{&ast.IndexExpr{X: ast.NewIdent(keyVar), Index: ast.NewIdent(iVar)}},
+				Tok: token.XOR_ASSIGN, // key[i] ^= ...
+				Rhs: []ast.Expr{
+					&ast.CallExpr{Fun: ast.NewIdent("byte"), Args: []ast.Expr{
+						&ast.BinaryExpr{
+							X:  ast.NewIdent(obf.WeavingKeyVarName),
+							Op: token.SHR, // >>
+							Y: &ast.ParenExpr{X: &ast.BinaryExpr{
+								X:  &ast.BinaryExpr{X: ast.NewIdent(iVar), Op: token.REM, Y: &ast.BasicLit{Kind: token.INT, Value: "8"}},
+								Op: token.MUL,
+								Y:  &ast.BasicLit{Kind: token.INT, Value: "8"},
+							}},
+						},
+					}},
+				},
+			},
+		}},
+	}
 
 	// --- Metamorphic part: shuffle declaration order ---
 	declarations := []ast.Stmt{
@@ -108,6 +143,7 @@ func (p *StringEncryptionPass) createMetamorphicDecryptor(encryptedData, key, iv
 	bodyStmts := []ast.Stmt{}
 	bodyStmts = append(bodyStmts, declarations...)
 	bodyStmts = append(bodyStmts, p.metaEngine.GenerateJunkCodeBlock()...) // Junk code
+	bodyStmts = append(bodyStmts, keyWeavingLoop)                         // Weave the key
 	bodyStmts = append(bodyStmts, &ast.AssignStmt{
 		Lhs: []ast.Expr{ast.NewIdent(blockVar), ast.NewIdent(errVar)}, Tok: token.DEFINE,
 		Rhs: []ast.Expr{&ast.CallExpr{
