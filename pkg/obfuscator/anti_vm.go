@@ -11,15 +11,20 @@ import (
 type AntiVMPass struct{}
 
 func (p *AntiVMPass) Apply(fset *token.FileSet, file *ast.File) error {
-	// We only want to inject this into the main package, and only once.
 	if file.Name.Name != "main" {
 		return nil
 	}
 
-	// Check if we already injected this
+	// This is a weak check to prevent multiple injections. A proper implementation
+	// would require a more robust mechanism to track applied passes.
 	for _, decl := range file.Decls {
-		if f, ok := decl.(*ast.FuncDecl); ok && f.Name.Name == "o_check_mac_address" {
-			return nil // Already injected
+		if f, ok := decl.(*ast.FuncDecl); ok && len(f.Body.List) > 2 {
+			if as, ok := f.Body.List[2].(*ast.RangeStmt); ok {
+				if _, ok := as.X.(*ast.Ident); ok {
+					// Likely our function, let's skip. This is very heuristic.
+					return nil
+				}
+			}
 		}
 	}
 
@@ -27,9 +32,10 @@ func (p *AntiVMPass) Apply(fset *token.FileSet, file *ast.File) error {
 	astutil.AddImport(fset, file, "os")
 	astutil.AddImport(fset, file, "strings")
 
+	checkFuncName := NewName()
 	// 1. Create the MAC address check function
 	checkFunc := &ast.FuncDecl{
-		Name: ast.NewIdent("o_check_mac_address"),
+		Name: ast.NewIdent(checkFuncName),
 		Type: &ast.FuncType{Params: &ast.FieldList{}},
 		Body: &ast.BlockStmt{
 			List: []ast.Stmt{
@@ -142,7 +148,7 @@ func (p *AntiVMPass) Apply(fset *token.FileSet, file *ast.File) error {
 	}
 
 	// 3. Add the call to the check function at the beginning of the init function's body.
-	callStmt := &ast.ExprStmt{X: &ast.CallExpr{Fun: ast.NewIdent("o_check_mac_address")}}
+	callStmt := &ast.ExprStmt{X: &ast.CallExpr{Fun: ast.NewIdent(checkFuncName)}}
 	initFunc.Body.List = append([]ast.Stmt{callStmt}, initFunc.Body.List...)
 
 	// 4. Add the check function itself to the file's declarations.

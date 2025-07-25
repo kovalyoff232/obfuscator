@@ -53,14 +53,14 @@ func flattenFunctionBody(fn *ast.FuncDecl, info *types.Info) (*ast.BlockStmt, er
 		return nil, fmt.Errorf("not enough blocks to flatten")
 	}
 
-	stateVar := ast.NewIdent("o_state_" + newName(""))
+	stateVar := ast.NewIdent(NewName())
 	exitState := len(blocks)
 	var returnVars []*ast.Ident
 	var returnStmts []ast.Stmt
 
 	if fn.Type.Results != nil {
-		for i, field := range fn.Type.Results.List {
-			retVar := ast.NewIdent("o_ret_" + strconv.Itoa(i))
+		for _, field := range fn.Type.Results.List {
+			retVar := ast.NewIdent(NewName())
 			returnVars = append(returnVars, retVar)
 			returnStmts = append(returnStmts, &ast.DeclStmt{
 				Decl: &ast.GenDecl{Tok: token.VAR, Specs: []ast.Spec{&ast.ValueSpec{Names: []*ast.Ident{retVar}, Type: field.Type}}},

@@ -7,21 +7,6 @@ import (
 	"time"
 )
 
-// newName generates a random string of a random length between 8 and 16 characters.
-// The character set includes lower and upper case letters, and numbers.
-func newName(prefix string) string {
-	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	const minLength = 8
-	const maxLength = 16
-
-	length := rand.Intn(maxLength-minLength+1) + minLength
-	b := make([]byte, length)
-	for i := range b {
-		b[i] = charset[rand.Intn(len(charset))]
-	}
-	return prefix + string(b)
-}
-
 func isSafeToRename(ident *ast.Ident) bool {
 	if ident == nil || ident.Obj == nil || ident.Obj.Decl == nil {
 		return false
@@ -61,8 +46,7 @@ func RenameIdentifiers(node *ast.File) {
 			if isSafeToRename(ident) {
 				// Ensure we don't accidentally generate the same name for different objects.
 				if _, exists := nameMap[ident.Obj]; !exists {
-					// Use a prefix to ensure it's a valid Go identifier
-					nameMap[ident.Obj] = newName("o_")
+					nameMap[ident.Obj] = NewName()
 				}
 			}
 		}

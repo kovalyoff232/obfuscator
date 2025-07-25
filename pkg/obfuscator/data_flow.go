@@ -5,7 +5,6 @@ import (
 	"go/ast"
 	"go/types"
 	"math/rand"
-	"strconv"
 
 	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/go/packages"
@@ -40,7 +39,7 @@ func (p *DataFlowPass) shuffleStructs(pkg *packages.Package) error {
 			numDummyFields := rand.Intn(2) + 1
 			for i := 0; i < numDummyFields; i++ {
 				dummyField := &ast.Field{
-					Names: []*ast.Ident{ast.NewIdent("o_dummy_" + strconv.Itoa(rand.Intn(10000)))},
+					Names: []*ast.Ident{ast.NewIdent(NewName())},
 					Type:  ast.NewIdent("int"), // A common, simple type.
 				}
 				structType.Fields.List = append(structType.Fields.List, dummyField)
@@ -86,10 +85,9 @@ func (p *DataFlowPass) renameGlobalsAndFields(pkg *packages.Package) error {
 		isGlobal := obj.Parent() == pkg.Types.Scope()
 
 		if isField || isGlobal {
-			newName := "o_df_" + strconv.Itoa(rand.Intn(10000))
-			renameMap[obj] = newName
-			fmt.Printf("    - Mapping %s to %s\n", ident.Name, newName)
-		}
+            renameMap[obj] = NewName()
+            fmt.Printf("    - Mapping %s to %s\n", ident.Name, renameMap[obj])
+        }
 	}
 
 	// --- Pass 2: Apply renaming ---

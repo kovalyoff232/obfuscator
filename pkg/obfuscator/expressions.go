@@ -10,9 +10,14 @@ import (
 // but functionally equivalent forms.
 func ObfuscateExpressions(node *ast.File) {
 	ast.Inspect(node, func(n ast.Node) bool {
-		// We are looking for binary expressions, like `a + b` or `x * y`.
 		expr, ok := n.(*ast.BinaryExpr)
 		if !ok {
+			return true
+		}
+
+		// We must not obfuscate string concatenation.
+		// A proper implementation would use type checking, but this is a reasonable heuristic.
+		if isStringExpression(expr) {
 			return true
 		}
 
@@ -20,6 +25,9 @@ func ObfuscateExpressions(node *ast.File) {
 		if rand.Intn(100) < 50 {
 			if newExpr := obfuscateSingleExpr(expr); newExpr != nil {
 				*expr = *newExpr
+				// Do not visit the children of the new expression,
+				// otherwise we will obfuscate it again and again.
+				return false
 			}
 		}
 
@@ -28,101 +36,108 @@ func ObfuscateExpressions(node *ast.File) {
 }
 
 // obfuscateSingleExpr takes a binary expression and returns a new, obfuscated one.
-// It selects a transformation randomly from a set of possible transformations for each operator.
 func obfuscateSingleExpr(expr *ast.BinaryExpr) *ast.BinaryExpr {
-	// We must not obfuscate string concatenation, as it would lead to compilation errors.
-	if isStringExpression(expr) {
-		return nil
-	}
-
-	// Randomly pick a transformation technique.
-	transformationIndex := rand.Intn(2)
-
+	// Each case contains a list of possible transformations for that operator.
+	// A random one is chosen.
 	switch expr.Op {
 	case token.ADD: // a + b
-		if transformationIndex == 0 {
+		transformations := []func(x, y ast.Expr) *ast.BinaryExpr{
 			// a + b  =>  a - (-b)
-			return &ast.BinaryExpr{
-				X:  expr.X,
-				Op: token.SUB,
-				Y: &ast.ParenExpr{
-					X: &ast.UnaryExpr{Op: token.SUB, X: expr.Y},
-				},
-			}
-		}
-		// a + b  =>  (a^b) + 2*(a&b)
-		return &ast.BinaryExpr{
-			X: &ast.ParenExpr{
-				X: &ast.BinaryExpr{X: expr.X, Op: token.XOR, Y: expr.Y},
+			func(x, y ast.Expr) *ast.BinaryExpr {
+				return &ast.BinaryExpr{
+					X:  x,
+					Op: token.SUB,
+					Y:  &ast.ParenExpr{X: &ast.UnaryExpr{Op: token.SUB, X: y}},
+				}
 			},
-			Op: token.ADD,
-			Y: &ast.BinaryExpr{
-				X:  &ast.BasicLit{Kind: token.INT, Value: "2"},
-				Op: token.MUL,
-				Y: &ast.ParenExpr{
-					X: &ast.BinaryExpr{X: expr.X, Op: token.AND, Y: expr.Y},
-				},
+			// a + b  =>  (a^b) + 2*(a&b)
+			func(x, y ast.Expr) *ast.BinaryExpr {
+				return &ast.BinaryExpr{
+					X: &ast.ParenExpr{X: &ast.BinaryExpr{X: x, Op: token.XOR, Y: y}},
+					Op: token.ADD,
+					Y: &ast.BinaryExpr{
+						X:  &ast.BasicLit{Kind: token.INT, Value: "2"},
+						Op: token.MUL,
+						Y:  &ast.ParenExpr{X: &ast.BinaryExpr{X: x, Op: token.AND, Y: y}},
+					},
+				}
 			},
 		}
+		return transformations[rand.Intn(len(transformations))](expr.X, expr.Y)
 
 	case token.SUB: // a - b
-		// a - b  =>  a + (-b)
-		return &ast.BinaryExpr{
-			X:  expr.X,
-			Op: token.ADD,
-			Y: &ast.ParenExpr{
-				X: &ast.UnaryExpr{Op: token.SUB, X: expr.Y},
+		transformations := []func(x, y ast.Expr) *ast.BinaryExpr{
+			// a - b  =>  a + (-b)
+			func(x, y ast.Expr) *ast.BinaryExpr {
+				return &ast.BinaryExpr{
+					X:  x,
+					Op: token.ADD,
+					Y:  &ast.ParenExpr{X: &ast.UnaryExpr{Op: token.SUB, X: y}},
+				}
+			},
+			// a - b => (a & ^b) - (^a & b)
+			func(x, y ast.Expr) *ast.BinaryExpr {
+				return &ast.BinaryExpr{
+					X:  &ast.ParenExpr{X: &ast.BinaryExpr{X: x, Op: token.AND, Y: &ast.UnaryExpr{Op: token.XOR, X: y}}},
+					Op: token.SUB,
+					Y:  &ast.ParenExpr{X: &ast.BinaryExpr{X: &ast.UnaryExpr{Op: token.XOR, X: x}, Op: token.AND, Y: y}},
+				}
 			},
 		}
+		return transformations[rand.Intn(len(transformations))](expr.X, expr.Y)
 
 	case token.XOR: // a ^ b
-		if transformationIndex == 0 {
+		transformations := []func(x, y ast.Expr) *ast.BinaryExpr{
 			// a ^ b => (a | b) - (a & b)
-			return &ast.BinaryExpr{
-				X: &ast.ParenExpr{
-					X: &ast.BinaryExpr{X: expr.X, Op: token.OR, Y: expr.Y},
-				},
-				Op: token.SUB,
-				Y: &ast.ParenExpr{
-					X: &ast.BinaryExpr{X: expr.X, Op: token.AND, Y: expr.Y},
-				},
-			}
+			func(x, y ast.Expr) *ast.BinaryExpr {
+				return &ast.BinaryExpr{
+					X: &ast.ParenExpr{X: &ast.BinaryExpr{X: x, Op: token.OR, Y: y}},
+					Op: token.SUB,
+					Y: &ast.ParenExpr{X: &ast.BinaryExpr{X: x, Op: token.AND, Y: y}},
+				}
+			},
+			// a ^ b => (a & ^b) | (^a & b)
+			func(x, y ast.Expr) *ast.BinaryExpr {
+				return &ast.BinaryExpr{
+					X:  &ast.ParenExpr{X: &ast.BinaryExpr{X: x, Op: token.AND, Y: &ast.UnaryExpr{Op: token.XOR, X: y}}},
+					Op: token.OR,
+					Y:  &ast.ParenExpr{X: &ast.BinaryExpr{X: &ast.UnaryExpr{Op: token.XOR, X: x}, Op: token.AND, Y: y}},
+				}
+			},
 		}
-		// a ^ b => (a & ^b) | (^a & b)
+		return transformations[rand.Intn(len(transformations))](expr.X, expr.Y)
+
+	case token.OR: // a | b
+		// a | b => (a ^ b) + (a & b)
 		return &ast.BinaryExpr{
-			X: &ast.ParenExpr{
-				X: &ast.BinaryExpr{
-					X:  expr.X,
-					Op: token.AND,
-					Y:  &ast.UnaryExpr{Op: token.XOR, X: expr.Y},
-				},
-			},
-			Op: token.OR,
-			Y: &ast.ParenExpr{
-				X: &ast.BinaryExpr{
-					X:  &ast.UnaryExpr{Op: token.XOR, X: expr.X},
-					Op: token.AND,
-					Y:  expr.Y,
-				},
-			},
+			X: &ast.ParenExpr{X: &ast.BinaryExpr{X: expr.X, Op: token.XOR, Y: expr.Y}},
+			Op: token.ADD,
+			Y: &ast.ParenExpr{X: &ast.BinaryExpr{X: expr.X, Op: token.AND, Y: expr.Y}},
 		}
 	}
 
 	return nil
 }
 
-// isStringExpression checks if a binary expression involves string literals.
-// This is a helper to avoid applying arithmetic obfuscations to string concatenations.
 func isStringExpression(expr *ast.BinaryExpr) bool {
 	if expr.Op != token.ADD {
 		return false
 	}
-	// A very basic check. A proper implementation would use type checking.
-	if lit, ok := expr.X.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+
+	var isString bool
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			isString = true
+			return false // Stop inspecting
+		}
+		// Heuristic: if a function call is part of the expression, assume it could return a string.
+		// This is broad, but safer than breaking the build.
+		if _, ok := n.(*ast.CallExpr); ok {
+			isString = true
+			return false
+		}
 		return true
-	}
-	if lit, ok := expr.Y.(*ast.BasicLit); ok && lit.Kind == token.STRING {
-		return true
-	}
-	return false
+	})
+
+	return isString
 }

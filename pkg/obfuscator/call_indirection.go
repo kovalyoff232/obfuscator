@@ -24,7 +24,7 @@ type CallIndirectionPass struct {
 func (p *CallIndirectionPass) Apply(obf *Obfuscator, fset *token.FileSet, files map[string]*ast.File) error {
 	fmt.Println("  - Applying call indirection...")
 	p.funcs = make(map[string]*funcInfo)
-	p.dispatcherFuncName = newName("dispatch_")
+	p.dispatcherFuncName = NewName()
 
 	if err := p.collectFuncs(files); err != nil {
 		return fmt.Errorf("error collecting funcs: %w", err)
@@ -60,7 +60,7 @@ func (p *CallIndirectionPass) collectFuncs(files map[string]*ast.File) error {
 				funcName := fn.Name.Name
 				p.funcs[funcName] = &funcInfo{
 					decl:     fn,
-					id:       newName("id_"),
+					id:       NewName(),
 					file:     file,
 					isMethod: fn.Recv != nil,
 				}

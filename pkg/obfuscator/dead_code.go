@@ -1,7 +1,6 @@
 package obfuscator
 
 import (
-	"fmt"
 	"go/ast"
 	"go/token"
 	"math/rand"
@@ -62,9 +61,9 @@ func InsertDeadCode(node *ast.File) {
 // always false but is difficult for a static analyzer to prove.
 // It returns the if statement and any variable declarations needed for it.
 func createOpaqueDeadIfStmt() (ast.Stmt, []ast.Stmt) {
-	varName1 := fmt.Sprintf("o_dead_%d", rand.Intn(1000))
-	varName2 := fmt.Sprintf("o_dead_%d", rand.Intn(1000)+1000)
-	varName3 := fmt.Sprintf("o_dead_%d", rand.Intn(1000)+2000)
+	varName1 := NewName()
+	varName2 := NewName()
+	varName3 := NewName()
 
 	// Declarations for the variables used in the opaque predicate.
 	decls := []ast.Stmt{

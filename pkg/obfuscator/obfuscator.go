@@ -125,7 +125,7 @@ func NewObfuscator(cfg *Config) *Obfuscator {
 	var typeAwarePasses []TypeAwarePass
 
 	obf := &Obfuscator{
-		WeavingKeyVarName: RandomIdentifier("o_wkey"),
+		WeavingKeyVarName: NewName(),
 	}
 
 	// Weaving related passes must come first.
