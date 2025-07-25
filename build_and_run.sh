@@ -28,7 +28,7 @@ rm -f ./obfuscated_src/kvstore.db
 
 # Собираем и запускаем с командой 'set'
 echo "Тест 1: Установка значения"
-go build -ldflags="-s -w" -o ./obfuscated_src/obfuscated_payload ./obfuscated_src/main.go
+go build -ldflags="-s -w" -o ./obfuscated_src/obfuscated_payload ./obfuscated_src/
 if [ $? -ne 0 ]; then
     echo "Ошибка сборки обфусцированного кода."
     exit 1

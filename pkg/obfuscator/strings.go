@@ -14,7 +14,7 @@ import (
 // and replaces the original string literals with calls to a global decryption function.
 type StringEncryptionPass struct {
 	EncryptedStrings []string // Holds all encrypted strings from the package.
-	StringKeys       []byte   // Holds the keys for each string.
+	StringKeys       [][]byte // Holds the multi-byte keys for each string.
 }
 
 // NewStringEncryptionPass creates a new pass instance.
@@ -23,7 +23,7 @@ func NewStringEncryptionPass() *StringEncryptionPass {
 }
 
 // Apply finds all string literals, encrypts them, and replaces them with a call
-// to the global decryption function.
+// to the global decryption function. It skips strings used for logging/errors.
 func (p *StringEncryptionPass) Apply(obf *Obfuscator, fset *token.FileSet, file *ast.File) error {
 	// This pass should only run on the main package to ensure the decryption logic is present.
 	if file.Name.Name != "main" {
@@ -38,11 +38,26 @@ func (p *StringEncryptionPass) Apply(obf *Obfuscator, fset *token.FileSet, file 
 
 		// --- Safety Checks ---
 		parent := cursor.Parent()
+		if call, ok := parent.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				if x, ok := sel.X.(*ast.Ident); ok && x.Name == "fmt" {
+					// It's a call to a function in the fmt package, skip it.
+					// This is a broad but safe heuristic to avoid breaking print statements.
+					return true
+				}
+			}
+		}
+
 		switch pt := parent.(type) {
 		case *ast.ImportSpec: // Cannot replace import paths: import "path"
 			return true
 		case *ast.Field: // Cannot replace struct tags: `json:"my_tag"`
 			if pt.Tag == node {
+				return true
+			}
+		// Don't encrypt panic messages
+		case *ast.CallExpr:
+			if ident, ok := pt.Fun.(*ast.Ident); ok && ident.Name == "panic" {
 				return true
 			}
 		}
@@ -81,24 +96,33 @@ func (p *StringEncryptionPass) Apply(obf *Obfuscator, fset *token.FileSet, file 
 	return nil
 }
 
-// encryptString performs a simple XOR encryption with a one-time key.
-func (p *StringEncryptionPass) encryptString(s string) (string, byte) {
-	key := generateKey()
+
+
+// encryptString performs a rolling XOR encryption with a multi-byte key.
+func (p *StringEncryptionPass) encryptString(s string) (string, []byte) {
+	key := generateKey(8) // Generate an 8-byte key
 	data := []byte(s)
 	encrypted := make([]byte, len(data))
 	for i, b := range data {
-		encrypted[i] = b ^ key
+		encrypted[i] = b ^ key[i%len(key)]
 	}
 	return string(encrypted), key
 }
 
-// generateKey creates a random byte for XOR encryption.
-func generateKey() byte {
-	b := make([]byte, 1)
-	rand.Read(b)
-	// Avoid a key of 0, as it doesn't encrypt.
-	if b[0] == 0 {
-		return 1
+// generateKey creates a random key of the specified size for XOR encryption.
+func generateKey(size int) []byte {
+	key := make([]byte, size)
+	rand.Read(key)
+	// Ensure key is not all zeros, which would result in no encryption.
+	isAllZeros := true
+	for _, b := range key {
+		if b != 0 {
+			isAllZeros = false
+			break
+		}
 	}
-	return b[0]
+	if isAllZeros {
+		key[0] = 1 // or generate again
+	}
+	return key
 }

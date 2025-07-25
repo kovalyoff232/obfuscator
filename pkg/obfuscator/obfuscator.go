@@ -185,9 +185,14 @@ func ProcessDirectory(inputPath, outputPath string, cfg *Config) error {
 	}
 
 	var mainPkg *packages.Package
+	var mainPkgPath string
+
 	for _, pkg := range pkgs {
 		if pkg.Name == "main" {
 			mainPkg = pkg
+			if len(pkg.GoFiles) > 0 {
+				mainPkgPath = filepath.Dir(pkg.GoFiles[0])
+			}
 		}
 		fmt.Printf("Processing package: %s\n", pkg.PkgPath)
 
@@ -229,11 +234,33 @@ func ProcessDirectory(inputPath, outputPath string, cfg *Config) error {
 		}
 	}
 
-	// After all files in the main package have been processed, inject the decryption logic.
+	// After all files in the main package have been processed, inject the decryption logic into a new file.
 	if mainPkg != nil && obfuscator.stringEncryption != nil && len(obfuscator.stringEncryption.EncryptedStrings) > 0 {
-		fmt.Println("Injecting string decryption logic into main package...")
-		mainFile := mainPkg.Syntax[0] // Inject into the first file of the main package.
-		injectStringDecryptor(obfuscator, fset, mainFile)
+		fmt.Println("Injecting string decryption logic into a new file...")
+		
+		// Create a new file AST for the injected code.
+		injectedFile := &ast.File{
+			Name: ast.NewIdent("main"),
+		}
+		
+		injectStringDecryptor(obfuscator, fset, injectedFile);
+
+		// Determine the output path for the new file.
+		relPath, err := filepath.Rel(inputPath, mainPkgPath)
+		if err != nil {
+			return fmt.Errorf("could not determine relative path for main package: %w", err)
+		}
+		injectedFilePath := filepath.Join(outputPath, relPath, "o_injected.go")
+
+		// Write the new file.
+		var buf bytes.Buffer
+		if err := printer.Fprint(&buf, fset, injectedFile); err != nil {
+			return fmt.Errorf("failed to print injected AST: %w", err)
+		}
+		if err := os.WriteFile(injectedFilePath, buf.Bytes(), 0644); err != nil {
+			return fmt.Errorf("failed to write injected file %s: %w", injectedFilePath, err)
+		}
+		fmt.Printf("  - Injected file created at: %s\n", injectedFilePath)
 	}
 
 	// Write all modified files to the output directory.
@@ -266,7 +293,7 @@ func ProcessDirectory(inputPath, outputPath string, cfg *Config) error {
 // injectStringDecryptor adds the global variables and the decryption function to the file.
 func injectStringDecryptor(obf *Obfuscator, fset *token.FileSet, file *ast.File) {
 	// 1. Create the global slice for encrypted strings
-	stringSlice := &ast.CompositeLit{Type: &ast.ArrayType{Elt: ast.NewIdent("string")}};
+	stringSlice := &ast.CompositeLit{Type: &ast.ArrayType{Elt: ast.NewIdent("string")}}
 	for _, s := range obf.stringEncryption.EncryptedStrings {
 		stringSlice.Elts = append(stringSlice.Elts, &ast.BasicLit{Kind: token.STRING, Value: fmt.Sprintf("%q", s)})
 	}
@@ -278,10 +305,14 @@ func injectStringDecryptor(obf *Obfuscator, fset *token.FileSet, file *ast.File)
 		}},
 	}
 
-	// 2. Create the global slice for decryption keys
-	keySlice := &ast.CompositeLit{Type: &ast.ArrayType{Elt: ast.NewIdent("byte")}};
+	// 2. Create the global slice for decryption keys (slice of byte slices)
+	keySlice := &ast.CompositeLit{Type: &ast.ArrayType{Elt: &ast.ArrayType{Elt: ast.NewIdent("byte")}}}
 	for _, k := range obf.stringEncryption.StringKeys {
-		keySlice.Elts = append(keySlice.Elts, &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("0x%x", k)})
+		byteSlice := &ast.CompositeLit{}
+		for _, b := range k {
+			byteSlice.Elts = append(byteSlice.Elts, &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("0x%x", b)})
+		}
+		keySlice.Elts = append(keySlice.Elts, byteSlice)
 	}
 	keysVar := &ast.GenDecl{
 		Tok: token.VAR,
@@ -313,7 +344,7 @@ func injectStringDecryptor(obf *Obfuscator, fset *token.FileSet, file *ast.File)
 }
 
 // createDecryptorFunc builds the AST for the global string decryption function.
-// This function is intentionally convoluted to make it harder to analyze.
+// This function now implements a correct rolling XOR decryption.
 func createDecryptorFunc(obf *Obfuscator) *ast.FuncDecl {
 	indexParam := "i"
 	dataVar, keyVar, resultVar, iVar, bVar := NewName(), NewName(), NewName(), NewName(), NewName()
@@ -330,31 +361,26 @@ func createDecryptorFunc(obf *Obfuscator) *ast.FuncDecl {
 		},
 		Body: &ast.BlockStmt{
 			List: []ast.Stmt{
+				// data := encryptedStrings[i]
 				&ast.AssignStmt{
 					Lhs: []ast.Expr{ast.NewIdent(dataVar)}, Tok: token.DEFINE,
 					Rhs: []ast.Expr{&ast.IndexExpr{X: ast.NewIdent(obf.EncryptedStringsVarName), Index: ast.NewIdent(indexParam)}},
 				},
+				// key := stringKeys[i]
 				&ast.AssignStmt{
 					Lhs: []ast.Expr{ast.NewIdent(keyVar)}, Tok: token.DEFINE,
 					Rhs: []ast.Expr{&ast.IndexExpr{X: ast.NewIdent(obf.StringKeysVarName), Index: ast.NewIdent(indexParam)}},
 				},
-				&ast.AssignStmt{
-					Lhs: []ast.Expr{ast.NewIdent(keyVar)}, Tok: token.XOR_ASSIGN,
-					Rhs: []ast.Expr{&ast.CallExpr{
-						Fun:  ast.NewIdent("byte"),
-						Args: []ast.Expr{&ast.BinaryExpr{X: ast.NewIdent(obf.WeavingKeyVarName), Op: token.REM, Y: &ast.BasicLit{Kind: token.INT, Value: "256"}}},
-					}},
-				},
+				// result := make([]byte, len(data))
 				&ast.AssignStmt{
 					Lhs: []ast.Expr{ast.NewIdent(resultVar)}, Tok: token.DEFINE,
 					Rhs: []ast.Expr{&ast.CallExpr{
-						Fun: ast.NewIdent("make"),
-						Args: []ast.Expr{
-							&ast.ArrayType{Elt: ast.NewIdent("byte")},
-							&ast.CallExpr{Fun: ast.NewIdent("len"), Args: []ast.Expr{ast.NewIdent(dataVar)}},
-						},
+						Fun:  ast.NewIdent("make"),
+						Args: []ast.Expr{&ast.ArrayType{Elt: ast.NewIdent("byte")}, &ast.CallExpr{Fun: ast.NewIdent("len"), Args: []ast.Expr{ast.NewIdent(dataVar)}}},
 					}},
 				},
+				// Rolling XOR decryption loop
+				// for i, b := range []byte(data) { result[i] = b ^ key[i % len(key)] }
 				&ast.RangeStmt{
 					Key: ast.NewIdent(iVar), Value: ast.NewIdent(bVar), Tok: token.DEFINE,
 					X: &ast.CallExpr{Fun: ast.NewIdent("[]byte"), Args: []ast.Expr{ast.NewIdent(dataVar)}},
@@ -362,11 +388,23 @@ func createDecryptorFunc(obf *Obfuscator) *ast.FuncDecl {
 						List: []ast.Stmt{
 							&ast.AssignStmt{
 								Lhs: []ast.Expr{&ast.IndexExpr{X: ast.NewIdent(resultVar), Index: ast.NewIdent(iVar)}}, Tok: token.ASSIGN,
-								Rhs: []ast.Expr{&ast.BinaryExpr{X: ast.NewIdent(bVar), Op: token.XOR, Y: ast.NewIdent(keyVar)}},
+								Rhs: []ast.Expr{&ast.BinaryExpr{
+									X:  ast.NewIdent(bVar),
+									Op: token.XOR,
+									Y: &ast.IndexExpr{
+										X: ast.NewIdent(keyVar),
+										Index: &ast.BinaryExpr{
+											X:  ast.NewIdent(iVar),
+											Op: token.REM,
+											Y:  &ast.CallExpr{Fun: ast.NewIdent("len"), Args: []ast.Expr{ast.NewIdent(keyVar)}},
+										},
+									},
+								}},
 							},
 						},
 					},
 				},
+				// return string(result)
 				&ast.ReturnStmt{Results: []ast.Expr{&ast.CallExpr{Fun: ast.NewIdent("string"), Args: []ast.Expr{ast.NewIdent(resultVar)}}}},
 			},
 		},

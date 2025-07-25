@@ -27,6 +27,7 @@ func (p *AntiDebugPass) Apply(obf *Obfuscator, fset *token.FileSet, file *ast.Fi
 
 	astutil.AddImport(fset, file, "time")
 	astutil.AddImport(fset, file, "syscall")
+	astutil.AddImport(fset, file, "runtime")
 
 	// 1. Declare the global variable for the weaving key.
 	keyVarDecl := &ast.GenDecl{
@@ -62,29 +63,35 @@ func createAntiDebugInitFunc(obf *Obfuscator) *ast.FuncDecl {
 		Y:  ast.NewIdent("t"),
 	}
 
-	// --- Ptrace check (Linux specific) ---
+	// --- Ptrace check (Linux specific, wrapped for cross-platform compilation) ---
 	ptraceCheck := &ast.IfStmt{
-		Init: &ast.AssignStmt{
-			Lhs: []ast.Expr{ast.NewIdent("pres"), ast.NewIdent("_"), ast.NewIdent("_")},
-			Tok: token.DEFINE,
-			Rhs: []ast.Expr{ // This needs to be a slice
-				&ast.CallExpr{
-					Fun: &ast.SelectorExpr{X: ast.NewIdent("syscall"), Sel: ast.NewIdent("Syscall")},
-					Args: []ast.Expr{
-						&ast.SelectorExpr{X: ast.NewIdent("syscall"), Sel: ast.NewIdent("SYS_PTRACE")},
-						&ast.CallExpr{Fun: ast.NewIdent("uintptr"), Args: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "0"}}}, // PTRACE_TRACEME
-						&ast.CallExpr{Fun: ast.NewIdent("uintptr"), Args: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "0"}}},
-						&ast.CallExpr{Fun: ast.NewIdent("uintptr"), Args: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "0"}}},
+		Cond: &ast.BinaryExpr{
+			X:  &ast.SelectorExpr{X: ast.NewIdent("runtime"), Sel: ast.NewIdent("GOOS")},
+			Op: token.EQL,
+			Y:  &ast.BasicLit{Kind: token.STRING, Value: `"linux"`},
+		},
+		Body: &ast.BlockStmt{List: []ast.Stmt{
+			&ast.IfStmt{
+				Init: &ast.AssignStmt{
+					Lhs: []ast.Expr{ast.NewIdent("pres"), ast.NewIdent("_"), ast.NewIdent("_")},
+					Tok: token.DEFINE,
+					Rhs: []ast.Expr{
+						&ast.CallExpr{
+							Fun: &ast.SelectorExpr{X: ast.NewIdent("syscall"), Sel: ast.NewIdent("Syscall")},
+							Args: []ast.Expr{
+								&ast.SelectorExpr{X: ast.NewIdent("syscall"), Sel: ast.NewIdent("SYS_PTRACE")},
+								&ast.CallExpr{Fun: ast.NewIdent("uintptr"), Args: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "0"}}}, // PTRACE_TRACEME
+								&ast.CallExpr{Fun: ast.NewIdent("uintptr"), Args: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "0"}}},
+								&ast.CallExpr{Fun: ast.NewIdent("uintptr"), Args: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "0"}}},
+							},
+						},
 					},
 				},
+				Cond: &ast.BinaryExpr{X: ast.NewIdent("pres"), Op: token.NEQ, Y: &ast.BasicLit{Kind: token.INT, Value: "0"}},
+				Body: &ast.BlockStmt{List: []ast.Stmt{
+					&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent("ptraceComponent")}, Tok: token.ASSIGN, Rhs: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "1337"}}},
+				}},
 			},
-		},
-		Cond: &ast.BinaryExpr{X: ast.NewIdent("pres"), Op: token.NEQ, Y: &ast.BasicLit{Kind: token.INT, Value: "0"}},
-		Body: &ast.BlockStmt{List: []ast.Stmt{
-			&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent("ptraceComponent")}, Tok: token.ASSIGN, Rhs: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "1337"}}},
-		}},
-		Else: &ast.BlockStmt{List: []ast.Stmt{
-			&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent("ptraceComponent")}, Tok: token.ASSIGN, Rhs: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "0"}}},
 		}},
 	}
 
@@ -92,7 +99,7 @@ func createAntiDebugInitFunc(obf *Obfuscator) *ast.FuncDecl {
 	finalCalc := &ast.AssignStmt{
 		Lhs: []ast.Expr{ast.NewIdent(obf.WeavingKeyVarName)},
 		Tok: token.ASSIGN,
-		Rhs: []ast.Expr{ // This needs to be a slice
+		Rhs: []ast.Expr{
 			&ast.BinaryExpr{
 				X: &ast.BinaryExpr{
 					X:  ast.NewIdent("timeComponent"),
@@ -115,7 +122,14 @@ func createAntiDebugInitFunc(obf *Obfuscator) *ast.FuncDecl {
 	// --- Assemble the function body ---
 	initBody := &ast.BlockStmt{
 		List: []ast.Stmt{
-			&ast.DeclStmt{Decl: &ast.GenDecl{Tok: token.VAR, Specs: []ast.Spec{&ast.ValueSpec{Names: []*ast.Ident{ast.NewIdent("ptraceComponent")}, Type: ast.NewIdent("int64")}}}},
+			// Initialize ptraceComponent to 0
+			&ast.DeclStmt{Decl: &ast.GenDecl{Tok: token.VAR, Specs: []ast.Spec{
+				&ast.ValueSpec{
+					Names:  []*ast.Ident{ast.NewIdent("ptraceComponent")},
+					Type:   ast.NewIdent("int64"),
+					Values: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "0"}},
+				},
+			}}},
 			&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent("t")}, Tok: token.DEFINE, Rhs: []ast.Expr{&ast.CallExpr{Fun: &ast.SelectorExpr{X: &ast.CallExpr{Fun: &ast.SelectorExpr{X: ast.NewIdent("time"), Sel: ast.NewIdent("Now")}}, Sel: ast.NewIdent("UnixNano")}}}},
 			&ast.ForStmt{
 				Init: &ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent("i")}, Tok: token.DEFINE, Rhs: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "0"}}},

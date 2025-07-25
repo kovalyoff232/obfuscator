@@ -3,6 +3,7 @@ package obfuscator
 import (
 	"fmt"
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"go/types"
 	"math/rand"
@@ -148,40 +149,100 @@ func hoistAndRenameVariables(body *ast.BlockStmt, info *types.Info) (map[string]
 	vars := make(map[string]*hoistedVar)
 	var decls []ast.Stmt
 
-	astutil.Apply(body, func(cursor *astutil.Cursor) bool {
-		assign, ok := cursor.Node().(*ast.AssignStmt)
-		if !ok || assign.Tok != token.DEFINE {
-			return true
-		}
+	// Visitor function to register a variable
+	registerVar := func(ident *ast.Ident) {
+		if _, exists := vars[ident.Name]; !exists {
+			var varType ast.Expr
+			if info != nil && info.TypeOf(ident) != nil {
+				// Attempt to get a string representation of the type
+				typeString := info.TypeOf(ident).String()
+				// A basic heuristic to check if it's a qualified type path
+				if _, err := parser.ParseExpr(typeString); err == nil {
+					varType = ast.NewIdent(typeString)
+				} else {
+					varType = ast.NewIdent("interface{}") // Fallback
+				}
+			} else {
+				varType = ast.NewIdent("interface{}") // Fallback
+			}
 
-		for _, lhs := range assign.Lhs {
-			if ident, ok := lhs.(*ast.Ident); ok {
-				if _, exists := vars[ident.Name]; !exists {
-					var varType ast.Expr
-					if info != nil && info.TypeOf(ident) != nil {
-						varType = ast.NewIdent(info.TypeOf(ident).String())
+			newVar := &hoistedVar{
+				OriginalName: ident.Name,
+				NewName:      NewName(),
+				Type:         varType,
+			}
+			vars[ident.Name] = newVar
+			decls = append(decls, &ast.DeclStmt{
+				Decl: &ast.GenDecl{Tok: token.VAR, Specs: []ast.Spec{
+					&ast.ValueSpec{
+						Names: []*ast.Ident{ast.NewIdent(newVar.NewName)},
+						Type:  newVar.Type,
+					},
+				}},
+			})
+		}
+	}
+
+	astutil.Apply(body, func(cursor *astutil.Cursor) bool {
+		switch n := cursor.Node().(type) {
+		// Handle `var` declarations: `var x int`, `var y = 10`
+		case *ast.GenDecl:
+			if n.Tok == token.VAR {
+				for _, spec := range n.Specs {
+					if vs, ok := spec.(*ast.ValueSpec); ok {
+						for _, name := range vs.Names {
+							registerVar(name)
+						}
+					}
+				}
+				// We replace the var declaration with a simple assignment
+				// if there are initial values.
+				var assignments []ast.Stmt
+				for _, spec := range n.Specs {
+					if vs, ok := spec.(*ast.ValueSpec); ok {
+						if len(vs.Values) > 0 {
+							var lhs []ast.Expr
+							for _, name := range vs.Names {
+								lhs = append(lhs, name)
+							}
+							assignments = append(assignments, &ast.AssignStmt{
+								Lhs: lhs,
+								Tok: token.ASSIGN,
+								Rhs: vs.Values,
+							})
+						}
+					}
+				}
+				if len(assignments) > 0 {
+					// Replace the DeclStmt with the new AssignStmts
+					// This requires careful handling of the cursor replacement
+					// because we are replacing one statement with potentially many.
+					// For simplicity in this context, we'll assume one spec per decl for replacement.
+					if len(assignments) == 1 {
+						cursor.Replace(assignments[0])
 					} else {
-						varType = ast.NewIdent("interface{}")
+						// Complex case: multiple value specs in one var decl.
+						// A simple replacement isn't ideal. For now, we focus on hoisting.
+						// The logic below will handle renaming.
 					}
-					newVar := &hoistedVar{
-						OriginalName: ident.Name,
-						NewName:      NewName(),
-						Type:         varType,
-					}
-					vars[ident.Name] = newVar
-					decls = append(decls, &ast.DeclStmt{
-						Decl: &ast.GenDecl{Tok: token.VAR, Specs: []ast.Spec{
-							&ast.ValueSpec{
-								Names: []*ast.Ident{ast.NewIdent(newVar.NewName)},
-								Type:  newVar.Type,
-							},
-						}},
-					})
+				} else {
+					// No initial values, just remove the declaration
+					cursor.Delete()
 				}
 			}
-		}
 
-		assign.Tok = token.ASSIGN
+		// Handle short variable declarations: `x := 10`
+		case *ast.AssignStmt:
+			if n.Tok == token.DEFINE {
+				for _, lhs := range n.Lhs {
+					if ident, ok := lhs.(*ast.Ident); ok {
+						registerVar(ident)
+					}
+				}
+				// Convert `:=` to `=`
+				n.Tok = token.ASSIGN
+			}
+		}
 		return true
 	}, nil)
 
