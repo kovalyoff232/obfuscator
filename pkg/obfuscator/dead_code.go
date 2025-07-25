@@ -12,6 +12,17 @@ import (
 // into function bodies to hinder manual analysis.
 func InsertDeadCode(file *ast.File) {
 	astutil.Apply(file, func(cursor *astutil.Cursor) bool {
+		// Check if we are inside a function declaration
+		funcDecl, isFunc := cursor.Parent().(*ast.FuncDecl)
+		if !isFunc || funcDecl.Name == nil {
+			return true
+		}
+
+		// Do not insert dead code into init functions
+		if funcDecl.Name.Name == "init" {
+			return true
+		}
+
 		block, ok := cursor.Node().(*ast.BlockStmt)
 		if !ok || len(block.List) == 0 {
 			return true
