@@ -32,23 +32,31 @@ type TypeAwarePass interface {
 func AddMetamorphicCode(file *ast.File) {
 	engine := &MetamorphicEngine{}
 	ast.Inspect(file, func(n ast.Node) bool {
-		// We only care about function bodies
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok || fn.Body == nil || len(fn.Body.List) == 0 {
 			return true
 		}
 
-		// Don't add junk to tiny functions
+		// Check for goto statements and skip the function if any are found.
+		hasGoto := false
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			if stmt, ok := node.(*ast.BranchStmt); ok && stmt.Tok == token.GOTO {
+				hasGoto = true
+				return false
+			}
+			return true
+		})
+		if hasGoto {
+			return true
+		}
+
 		if len(fn.Body.List) < 2 {
 			return true
 		}
 
-		// Insert junk code at a random position
 		if rand.Intn(100) < 30 { // 30% chance to add junk
 			junk := engine.GenerateJunkCodeBlock()
 			insertionPoint := rand.Intn(len(fn.Body.List))
-
-			// Prepend to avoid issues with slice indexing
 			fn.Body.List = append(fn.Body.List[:insertionPoint], append(junk, fn.Body.List[insertionPoint:]...)...)
 		}
 
