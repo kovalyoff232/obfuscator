@@ -95,6 +95,7 @@ type Config struct {
 	AntiDebugging        bool
 	AntiVM               bool
 	IndirectCalls        bool
+	WeaveIntegrity       bool
 }
 
 type Obfuscator struct {
@@ -103,6 +104,7 @@ type Obfuscator struct {
 	typeAwarePasses   []TypeAwarePass
 	WeavingKeyVarName string // Name of the global var for the anti-debug key
 	stringEncryption  *StringEncryptionPass
+	integrityWeaver   *IntegrityWeavingPass
 }
 
 func NewObfuscator(cfg *Config) *Obfuscator {
@@ -140,6 +142,10 @@ func NewObfuscator(cfg *Config) *Obfuscator {
 	}
 	if cfg.IndirectCalls {
 		obf.globalPasses = append(obf.globalPasses, &CallIndirectionPass{})
+	}
+	// Integrity weaving must be the absolute last pass.
+	if cfg.WeaveIntegrity {
+		obf.integrityWeaver = NewIntegrityWeavingPass()
 	}
 
 	return obf
@@ -208,6 +214,13 @@ func ProcessDirectory(inputPath, outputPath string, cfg *Config) error {
 				return fmt.Errorf("error in global pass for package %s: %w", pkg.Name, err)
 			}
 		}
+
+		// Run the final integrity weaving pass if enabled.
+		if obfuscator.integrityWeaver != nil {
+			if err := obfuscator.integrityWeaver.Apply(obfuscator, fset, fileMap); err != nil {
+				return fmt.Errorf("error in integrity weaving pass for package %s: %w", pkg.Name, err)
+			}
+		}
 	}
 
 	// Write all modified files to the output directory.
@@ -236,4 +249,3 @@ func ProcessDirectory(inputPath, outputPath string, cfg *Config) error {
 
 	return nil
 }
-
