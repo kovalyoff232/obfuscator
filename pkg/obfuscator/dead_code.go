@@ -3,7 +3,6 @@ package obfuscator
 import (
 	"go/ast"
 	"go/token"
-	"math/rand"
 
 	"golang.org/x/tools/go/ast/astutil"
 )
@@ -42,9 +41,9 @@ func InsertDeadCode(file *ast.File) {
 		}
 
 		// Insert dead code at a random position within the block.
-		if rand.Intn(3) == 0 { // 33% chance to insert code into any given block
+		if randInt(3) == 0 { // 33% chance to insert code into any given block
 			var junkStmts []ast.Stmt
-			template := rand.Intn(3) // Choose one of the templates
+			template := randInt(3) // Choose one of the templates
 
 			switch template {
 			case 0:
@@ -57,8 +56,7 @@ func InsertDeadCode(file *ast.File) {
 
 			// Insert the junk statement at a random index.
 			if len(block.List) > 0 {
-				// Ensure we don't insert into an empty block, though we checked for len > 1
-				insertIndex := rand.Intn(len(block.List))
+				insertIndex := randInt(int64(len(block.List)))
 				block.List = append(block.List[:insertIndex], append(junkStmts, block.List[insertIndex:]...)...)
 			}
 		}
@@ -68,7 +66,6 @@ func InsertDeadCode(file *ast.File) {
 }
 
 // createMathJunk creates a block of pointless arithmetic operations.
-// E.g., x := 123; y := x * x; z := y - x; _ = z
 func createMathJunk() []ast.Stmt {
 	x, y, z := NewName(), NewName(), NewName()
 	return []ast.Stmt{
@@ -84,7 +81,6 @@ func createMathJunk() []ast.Stmt {
 			Lhs: []ast.Expr{ast.NewIdent(z)}, Tok: token.DEFINE,
 			Rhs: []ast.Expr{&ast.BinaryExpr{X: ast.NewIdent(y), Op: token.SUB, Y: ast.NewIdent(x)}},
 		},
-		// Make sure the variable is "used" to satisfy the compiler.
 		&ast.AssignStmt{
 			Lhs: []ast.Expr{ast.NewIdent("_")}, Tok: token.ASSIGN,
 			Rhs: []ast.Expr{ast.NewIdent(z)},
@@ -93,24 +89,62 @@ func createMathJunk() []ast.Stmt {
 }
 
 // createOpaquePredicateJunk creates an if statement with a condition that is always true
-// but hard for a static analyzer to prove.
-// E.g., x := 123; if (x*x + 1) > 0 { _ = "junk" }
+// but harder for a static analyzer to prove.
 func createOpaquePredicateJunk() []ast.Stmt {
 	x, y := NewName(), NewName()
+	var cond ast.Expr
+
+	template := randInt(3)
+	switch template {
+	case 0:
+		// (x*x - 1) == (x-1)*(x+1)
+		cond = &ast.BinaryExpr{
+			X: &ast.BinaryExpr{
+				X:  &ast.BinaryExpr{X: ast.NewIdent(x), Op: token.MUL, Y: ast.NewIdent(x)},
+				Op: token.SUB,
+				Y:  &ast.BasicLit{Kind: token.INT, Value: "1"},
+			},
+			Op: token.EQL,
+			Y: &ast.BinaryExpr{
+				X:  &ast.ParenExpr{X: &ast.BinaryExpr{X: ast.NewIdent(x), Op: token.SUB, Y: &ast.BasicLit{Kind: token.INT, Value: "1"}}},
+				Op: token.MUL,
+				Y:  &ast.ParenExpr{X: &ast.BinaryExpr{X: ast.NewIdent(x), Op: token.ADD, Y: &ast.BasicLit{Kind: token.INT, Value: "1"}}},
+			},
+		}
+	case 1:
+		// 7*x - 3*x - 4*x == 0
+		cond = &ast.BinaryExpr{
+			X: &ast.BinaryExpr{
+				X: &ast.BinaryExpr{
+					X:  &ast.BinaryExpr{X: &ast.BasicLit{Kind: token.INT, Value: "7"}, Op: token.MUL, Y: ast.NewIdent(x)},
+					Op: token.SUB,
+					Y:  &ast.BinaryExpr{X: &ast.BasicLit{Kind: token.INT, Value: "3"}, Op: token.MUL, Y: ast.NewIdent(x)},
+				},
+				Op: token.SUB,
+				Y:  &ast.BinaryExpr{X: &ast.BasicLit{Kind: token.INT, Value: "4"}, Op: token.MUL, Y: ast.NewIdent(x)},
+			},
+			Op: token.EQL,
+			Y:  &ast.BasicLit{Kind: token.INT, Value: "0"},
+		}
+	default:
+		// y := x*x; (y - x*x) == 0
+		cond = &ast.BinaryExpr{
+			X: &ast.BinaryExpr{
+				X:  ast.NewIdent(y),
+				Op: token.SUB,
+				Y:  &ast.BinaryExpr{X: ast.NewIdent(x), Op: token.MUL, Y: ast.NewIdent(x)},
+			},
+			Op: token.EQL,
+			Y:  &ast.BasicLit{Kind: token.INT, Value: "0"},
+		}
+	}
+
 	return []ast.Stmt{&ast.IfStmt{
 		Init: &ast.AssignStmt{
 			Lhs: []ast.Expr{ast.NewIdent(x)}, Tok: token.DEFINE,
 			Rhs: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "123"}},
 		},
-		Cond: &ast.BinaryExpr{
-			X: &ast.BinaryExpr{
-				X:  &ast.BinaryExpr{X: ast.NewIdent(x), Op: token.MUL, Y: ast.NewIdent(x)},
-				Op: token.ADD,
-				Y:  &ast.BasicLit{Kind: token.INT, Value: "1"},
-			},
-			Op: token.GTR,
-			Y:  &ast.BasicLit{Kind: token.INT, Value: "0"},
-		},
+		Cond: cond,
 		Body: &ast.BlockStmt{
 			List: []ast.Stmt{
 				&ast.AssignStmt{
@@ -140,7 +174,6 @@ func createAllocationJunk() []ast.Stmt {
 				},
 			}},
 		},
-		// "Use" the variable to avoid compiler errors.
 		&ast.AssignStmt{
 			Lhs: []ast.Expr{ast.NewIdent("_")}, Tok: token.ASSIGN,
 			Rhs: []ast.Expr{&ast.CallExpr{Fun: ast.NewIdent("len"), Args: []ast.Expr{ast.NewIdent(sliceVar)}}},

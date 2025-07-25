@@ -1,12 +1,13 @@
 package obfuscator
 
 import (
+	"crypto/rand"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"go/types"
-	"math/rand"
+	"math/big"
 	"strconv"
 
 	"golang.org/x/tools/go/ast/astutil"
@@ -21,7 +22,6 @@ func ControlFlow(f *ast.File, info *types.Info) {
 			return true
 		}
 
-		// Avoid flattening critical or tiny functions
 		if funcDecl.Name.Name == "main" || funcDecl.Name.Name == "init" || len(funcDecl.Body.List) < 3 {
 			return true
 		}
@@ -41,7 +41,6 @@ type BasicBlock struct {
 	Stmts []ast.Stmt
 }
 
-// hoistedVar represents a variable that has been hoisted to the top of the function.
 type hoistedVar struct {
 	OriginalName string
 	NewName      string
@@ -49,10 +48,7 @@ type hoistedVar struct {
 }
 
 func flattenFunctionBody(fn *ast.FuncDecl, info *types.Info) (*ast.BlockStmt, error) {
-	// 1. Hoist all variable declarations to the top of the function and rename them.
 	hoistedVars, hoistedDecls := hoistAndRenameVariables(fn.Body, info)
-
-	// 2. Decompose the function body into basic blocks.
 	blocks := decomposeToBasicBlocks(fn.Body.List)
 	if len(blocks) <= 1 {
 		return nil, fmt.Errorf("not enough blocks to flatten")
@@ -73,7 +69,6 @@ func flattenFunctionBody(fn *ast.FuncDecl, info *types.Info) (*ast.BlockStmt, er
 		}
 	}
 
-	// 3. Rewrite blocks.
 	for i := range blocks {
 		nextState := i + 1
 		if i == len(blocks)-1 {
@@ -82,10 +77,14 @@ func flattenFunctionBody(fn *ast.FuncDecl, info *types.Info) (*ast.BlockStmt, er
 		blocks[i].Stmts = rewriteBlock(blocks[i].Stmts, stateVar, nextState, exitState, returnVars, hoistedVars)
 	}
 
-	// 4. Create junk cases using opaque predicates.
 	junkCases := createJunkCases(len(blocks), len(blocks)+5)
 
-	rand.Shuffle(len(blocks), func(i, j int) { blocks[i], blocks[j] = blocks[j], blocks[i] })
+	// Fisher-Yates shuffle using crypto/rand
+	for i := len(blocks) - 1; i > 0; i-- {
+		j, _ := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
+		blocks[i], blocks[j.Int64()] = blocks[j.Int64()], blocks[i]
+	}
+
 	var cases []ast.Stmt
 	for _, block := range blocks {
 		cases = append(cases, &ast.CaseClause{
@@ -95,7 +94,6 @@ func flattenFunctionBody(fn *ast.FuncDecl, info *types.Info) (*ast.BlockStmt, er
 	}
 	cases = append(cases, junkCases...)
 
-	// 5. Assemble the new body.
 	newBody := &ast.BlockStmt{}
 	newBody.List = append(newBody.List, hoistedDecls...)
 	newBody.List = append(newBody.List, returnStmts...)
@@ -124,21 +122,63 @@ func createJunkCases(startID, count int) []ast.Stmt {
 	var junkCases []ast.Stmt
 	for i := 0; i < count; i++ {
 		junkID := startID + i
-		junkVar := NewName()
+		x, y := NewName(), NewName()
+		var cond ast.Expr
+
+		template := randInt(3)
+		switch template {
+		case 0:
+			// (x*x + 1) < 0 -- always false
+			cond = &ast.BinaryExpr{
+				X:  &ast.BinaryExpr{
+					X:  &ast.BinaryExpr{X: ast.NewIdent(x), Op: token.MUL, Y: ast.NewIdent(x)},
+					Op: token.ADD,
+					Y:  &ast.BasicLit{Kind: token.INT, Value: "1"},
+				},
+				Op: token.LSS,
+				Y:  &ast.BasicLit{Kind: token.INT, Value: "0"},
+			}
+		case 1:
+			// (x - y) * (x + y) != x*x - y*y -- always false
+			cond = &ast.BinaryExpr{
+				X: &ast.BinaryExpr{
+					X:  &ast.ParenExpr{X: &ast.BinaryExpr{X: ast.NewIdent(x), Op: token.SUB, Y: ast.NewIdent(y)}},
+					Op: token.MUL,
+					Y:  &ast.ParenExpr{X: &ast.BinaryExpr{X: ast.NewIdent(x), Op: token.ADD, Y: ast.NewIdent(y)}},
+				},
+				Op: token.NEQ,
+				Y: &ast.BinaryExpr{
+					X:  &ast.BinaryExpr{X: ast.NewIdent(x), Op: token.MUL, Y: ast.NewIdent(x)},
+					Op: token.SUB,
+					Y:  &ast.BinaryExpr{X: ast.NewIdent(y), Op: token.MUL, Y: ast.NewIdent(y)},
+				},
+			}
+		default:
+			// x*y + 1 == x*y -- always false
+			cond = &ast.BinaryExpr{
+				X: &ast.BinaryExpr{
+					X:  &ast.BinaryExpr{X: ast.NewIdent(x), Op: token.MUL, Y: ast.NewIdent(y)},
+					Op: token.ADD,
+					Y:  &ast.BasicLit{Kind: token.INT, Value: "1"},
+				},
+				Op: token.EQL,
+				Y:  &ast.BinaryExpr{X: ast.NewIdent(x), Op: token.MUL, Y: ast.NewIdent(y)},
+			}
+		}
+
 		junkCases = append(junkCases, &ast.CaseClause{
 			List: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(junkID)}},
 			Body: []ast.Stmt{
-				&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent(junkVar)}, Tok: token.DEFINE, Rhs: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "123"}}},
+				&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent(x)}, Tok: token.DEFINE, Rhs: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "123"}}},
+				&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent(y)}, Tok: token.DEFINE, Rhs: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "456"}}},
 				&ast.IfStmt{
-					Cond: &ast.BinaryExpr{
-						X:  &ast.BinaryExpr{X: ast.NewIdent(junkVar), Op: token.MUL, Y: ast.NewIdent(junkVar)},
-						Op: token.LSS,
-						Y:  &ast.BasicLit{Kind: token.INT, Value: "0"},
-					},
+					Cond: cond,
 					Body: &ast.BlockStmt{List: []ast.Stmt{
 						&ast.ExprStmt{X: &ast.CallExpr{Fun: ast.NewIdent("panic"), Args: []ast.Expr{&ast.BasicLit{Kind: token.STRING, Value: "\"unreachable\""}}}},
 					}},
 				},
+				// Add this line to "use" the y variable
+				&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent("_")}, Tok: token.ASSIGN, Rhs: []ast.Expr{ast.NewIdent(y)}},
 			},
 		})
 	}
@@ -149,21 +189,18 @@ func hoistAndRenameVariables(body *ast.BlockStmt, info *types.Info) (map[string]
 	vars := make(map[string]*hoistedVar)
 	var decls []ast.Stmt
 
-	// Visitor function to register a variable
 	registerVar := func(ident *ast.Ident) {
 		if _, exists := vars[ident.Name]; !exists {
 			var varType ast.Expr
 			if info != nil && info.TypeOf(ident) != nil {
-				// Attempt to get a string representation of the type
 				typeString := info.TypeOf(ident).String()
-				// A basic heuristic to check if it's a qualified type path
 				if _, err := parser.ParseExpr(typeString); err == nil {
 					varType = ast.NewIdent(typeString)
 				} else {
-					varType = ast.NewIdent("interface{}") // Fallback
+					varType = ast.NewIdent("interface{}")
 				}
 			} else {
-				varType = ast.NewIdent("interface{}") // Fallback
+				varType = ast.NewIdent("interface{}")
 			}
 
 			newVar := &hoistedVar{
@@ -185,21 +222,14 @@ func hoistAndRenameVariables(body *ast.BlockStmt, info *types.Info) (map[string]
 
 	astutil.Apply(body, func(cursor *astutil.Cursor) bool {
 		switch n := cursor.Node().(type) {
-		// Handle `var` declarations: `var x int`, `var y = 10`
 		case *ast.GenDecl:
 			if n.Tok == token.VAR {
+				var assignments []ast.Stmt
 				for _, spec := range n.Specs {
 					if vs, ok := spec.(*ast.ValueSpec); ok {
 						for _, name := range vs.Names {
 							registerVar(name)
 						}
-					}
-				}
-				// We replace the var declaration with a simple assignment
-				// if there are initial values.
-				var assignments []ast.Stmt
-				for _, spec := range n.Specs {
-					if vs, ok := spec.(*ast.ValueSpec); ok {
 						if len(vs.Values) > 0 {
 							var lhs []ast.Expr
 							for _, name := range vs.Names {
@@ -214,24 +244,13 @@ func hoistAndRenameVariables(body *ast.BlockStmt, info *types.Info) (map[string]
 					}
 				}
 				if len(assignments) > 0 {
-					// Replace the DeclStmt with the new AssignStmts
-					// This requires careful handling of the cursor replacement
-					// because we are replacing one statement with potentially many.
-					// For simplicity in this context, we'll assume one spec per decl for replacement.
 					if len(assignments) == 1 {
 						cursor.Replace(assignments[0])
-					} else {
-						// Complex case: multiple value specs in one var decl.
-						// A simple replacement isn't ideal. For now, we focus on hoisting.
-						// The logic below will handle renaming.
 					}
 				} else {
-					// No initial values, just remove the declaration
 					cursor.Delete()
 				}
 			}
-
-		// Handle short variable declarations: `x := 10`
 		case *ast.AssignStmt:
 			if n.Tok == token.DEFINE {
 				for _, lhs := range n.Lhs {
@@ -239,7 +258,6 @@ func hoistAndRenameVariables(body *ast.BlockStmt, info *types.Info) (map[string]
 						registerVar(ident)
 					}
 				}
-				// Convert `:=` to `=`
 				n.Tok = token.ASSIGN
 			}
 		}
