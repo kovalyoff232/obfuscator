@@ -8,20 +8,25 @@ import (
 	"go/ast"
 	"go/token"
 	"log"
+	mrand "math/rand"
 	"strconv"
 
 	"golang.org/x/tools/go/ast/astutil"
 )
 
 // StringEncryptionPass handles the inlined string encryption process using AES-CTR.
-type StringEncryptionPass struct{}
+type StringEncryptionPass struct {
+	metaEngine *MetamorphicEngine
+}
 
 // NewStringEncryptionPass creates a new pass instance.
 func NewStringEncryptionPass() *StringEncryptionPass {
-	return &StringEncryptionPass{}
+	return &StringEncryptionPass{
+		metaEngine: &MetamorphicEngine{},
+	}
 }
 
-// Apply finds string literals and replaces them with an inlined, self-decrypting block of code.
+// Apply finds string literals and replaces them with a metamorphic, inlined, self-decrypting block of code.
 func (p *StringEncryptionPass) Apply(obf *Obfuscator, fset *token.FileSet, file *ast.File) error {
 	astutil.Apply(file, func(cursor *astutil.Cursor) bool {
 		node, ok := cursor.Node().(*ast.BasicLit)
@@ -59,18 +64,15 @@ func (p *StringEncryptionPass) Apply(obf *Obfuscator, fset *token.FileSet, file 
 			return true
 		}
 
-		// Encrypt the string.
 		encryptedData, key, iv := encryptStringAES(unquoted)
 		if encryptedData == nil {
 			return true
 		}
 
-		// Add necessary imports to the file.
 		astutil.AddImport(fset, file, "crypto/aes")
 		astutil.AddImport(fset, file, "crypto/cipher")
 
-		// Create the inlined decryptor.
-		decryptor := createInlineDecryptor(encryptedData, key, iv)
+		decryptor := p.createMetamorphicDecryptor(encryptedData, key, iv)
 		cursor.Replace(decryptor)
 
 		return false
@@ -79,10 +81,8 @@ func (p *StringEncryptionPass) Apply(obf *Obfuscator, fset *token.FileSet, file 
 	return nil
 }
 
-// createInlineDecryptor generates an AST for a self-contained decryption block.
-// It returns a call to an anonymous function that performs decryption.
-func createInlineDecryptor(encryptedData, key, iv []byte) *ast.CallExpr {
-	// Helper to create a `[]byte` literal from data
+// createMetamorphicDecryptor generates a varied AST for a self-contained decryption block.
+func (p *StringEncryptionPass) createMetamorphicDecryptor(encryptedData, key, iv []byte) *ast.CallExpr {
 	createByteSliceLiteral := func(data []byte) *ast.CompositeLit {
 		slice := &ast.CompositeLit{Type: &ast.ArrayType{Elt: ast.NewIdent("byte")}}
 		for _, b := range data {
@@ -94,51 +94,61 @@ func createInlineDecryptor(encryptedData, key, iv []byte) *ast.CallExpr {
 	dataVar, keyVar, ivVar, blockVar, streamVar, resultVar, errVar :=
 		NewName(), NewName(), NewName(), NewName(), NewName(), NewName(), NewName()
 
+	// --- Metamorphic part: shuffle declaration order ---
+	declarations := []ast.Stmt{
+		&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent(keyVar)}, Tok: token.DEFINE, Rhs: []ast.Expr{createByteSliceLiteral(key)}},
+		&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent(ivVar)}, Tok: token.DEFINE, Rhs: []ast.Expr{createByteSliceLiteral(iv)}},
+		&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent(dataVar)}, Tok: token.DEFINE, Rhs: []ast.Expr{createByteSliceLiteral(encryptedData)}},
+	}
+	mrand.Shuffle(len(declarations), func(i, j int) {
+		declarations[i], declarations[j] = declarations[j], declarations[i]
+	})
+
+	// --- Metamorphic part: build the body with junk code ---
+	bodyStmts := []ast.Stmt{}
+	bodyStmts = append(bodyStmts, declarations...)
+	bodyStmts = append(bodyStmts, p.metaEngine.GenerateJunkCodeBlock()...) // Junk code
+	bodyStmts = append(bodyStmts, &ast.AssignStmt{
+		Lhs: []ast.Expr{ast.NewIdent(blockVar), ast.NewIdent(errVar)}, Tok: token.DEFINE,
+		Rhs: []ast.Expr{&ast.CallExpr{
+			Fun:  &ast.SelectorExpr{X: ast.NewIdent("aes"), Sel: ast.NewIdent("NewCipher")},
+			Args: []ast.Expr{ast.NewIdent(keyVar)},
+		}},
+	})
+	bodyStmts = append(bodyStmts, &ast.IfStmt{
+		Cond: &ast.BinaryExpr{X: ast.NewIdent(errVar), Op: token.NEQ, Y: ast.NewIdent("nil")},
+		Body: &ast.BlockStmt{List: []ast.Stmt{
+			&ast.ExprStmt{X: &ast.CallExpr{Fun: ast.NewIdent("panic"), Args: []ast.Expr{ast.NewIdent(errVar)}}},
+		}},
+	})
+	bodyStmts = append(bodyStmts, p.metaEngine.GenerateJunkCodeBlock()...) // More junk code
+	bodyStmts = append(bodyStmts, &ast.AssignStmt{
+		Lhs: []ast.Expr{ast.NewIdent(resultVar)}, Tok: token.DEFINE,
+		Rhs: []ast.Expr{&ast.CallExpr{
+			Fun:  ast.NewIdent("make"),
+			Args: []ast.Expr{&ast.ArrayType{Elt: ast.NewIdent("byte")}, &ast.CallExpr{Fun: ast.NewIdent("len"), Args: []ast.Expr{ast.NewIdent(dataVar)}}},
+		}},
+	})
+	bodyStmts = append(bodyStmts, &ast.AssignStmt{
+		Lhs: []ast.Expr{ast.NewIdent(streamVar)}, Tok: token.DEFINE,
+		Rhs: []ast.Expr{&ast.CallExpr{
+			Fun:  &ast.SelectorExpr{X: ast.NewIdent("cipher"), Sel: ast.NewIdent("NewCTR")},
+			Args: []ast.Expr{ast.NewIdent(blockVar), ast.NewIdent(ivVar)},
+		}},
+	})
+	bodyStmts = append(bodyStmts, &ast.ExprStmt{X: &ast.CallExpr{
+		Fun:  &ast.SelectorExpr{X: ast.NewIdent(streamVar), Sel: ast.NewIdent("XORKeyStream")},
+		Args: []ast.Expr{ast.NewIdent(resultVar), ast.NewIdent(dataVar)},
+	}})
+	bodyStmts = append(bodyStmts, &ast.ReturnStmt{Results: []ast.Expr{&ast.CallExpr{Fun: ast.NewIdent("string"), Args: []ast.Expr{ast.NewIdent(resultVar)}}}})
+
 	return &ast.CallExpr{
 		Fun: &ast.FuncLit{
 			Type: &ast.FuncType{
 				Params:  &ast.FieldList{},
 				Results: &ast.FieldList{List: []*ast.Field{{Type: ast.NewIdent("string")}}},
 			},
-			Body: &ast.BlockStmt{
-				List: []ast.Stmt{
-					&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent(keyVar)}, Tok: token.DEFINE, Rhs: []ast.Expr{createByteSliceLiteral(key)}},
-					&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent(ivVar)}, Tok: token.DEFINE, Rhs: []ast.Expr{createByteSliceLiteral(iv)}},
-					&ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent(dataVar)}, Tok: token.DEFINE, Rhs: []ast.Expr{createByteSliceLiteral(encryptedData)}},
-					&ast.AssignStmt{
-						Lhs: []ast.Expr{ast.NewIdent(blockVar), ast.NewIdent(errVar)}, Tok: token.DEFINE,
-						Rhs: []ast.Expr{&ast.CallExpr{
-							Fun:  &ast.SelectorExpr{X: ast.NewIdent("aes"), Sel: ast.NewIdent("NewCipher")},
-							Args: []ast.Expr{ast.NewIdent(keyVar)},
-						}},
-					},
-					&ast.IfStmt{
-						Cond: &ast.BinaryExpr{X: ast.NewIdent(errVar), Op: token.NEQ, Y: ast.NewIdent("nil")},
-						Body: &ast.BlockStmt{List: []ast.Stmt{
-							&ast.ExprStmt{X: &ast.CallExpr{Fun: ast.NewIdent("panic"), Args: []ast.Expr{ast.NewIdent(errVar)}}},
-						}},
-					},
-					&ast.AssignStmt{
-						Lhs: []ast.Expr{ast.NewIdent(resultVar)}, Tok: token.DEFINE,
-						Rhs: []ast.Expr{&ast.CallExpr{
-							Fun:  ast.NewIdent("make"),
-							Args: []ast.Expr{&ast.ArrayType{Elt: ast.NewIdent("byte")}, &ast.CallExpr{Fun: ast.NewIdent("len"), Args: []ast.Expr{ast.NewIdent(dataVar)}}},
-						}},
-					},
-					&ast.AssignStmt{
-						Lhs: []ast.Expr{ast.NewIdent(streamVar)}, Tok: token.DEFINE,
-						Rhs: []ast.Expr{&ast.CallExpr{
-							Fun:  &ast.SelectorExpr{X: ast.NewIdent("cipher"), Sel: ast.NewIdent("NewCTR")},
-							Args: []ast.Expr{ast.NewIdent(blockVar), ast.NewIdent(ivVar)},
-						}},
-					},
-					&ast.ExprStmt{X: &ast.CallExpr{
-						Fun:  &ast.SelectorExpr{X: ast.NewIdent(streamVar), Sel: ast.NewIdent("XORKeyStream")},
-						Args: []ast.Expr{ast.NewIdent(resultVar), ast.NewIdent(dataVar)},
-					}},
-					&ast.ReturnStmt{Results: []ast.Expr{&ast.CallExpr{Fun: ast.NewIdent("string"), Args: []ast.Expr{ast.NewIdent(resultVar)}}}},
-				},
-			},
+			Body: &ast.BlockStmt{List: bodyStmts},
 		},
 	}
 }
