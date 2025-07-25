@@ -24,6 +24,7 @@ func main() {
 	indirectCalls := flag.Bool("indirect-calls", true, "Enable call indirection")
 	weaveIntegrity := flag.Bool("weave-integrity", true, "Enable integrity weaving checks")
 	addMetamorphicCode := flag.Bool("metamorphic", true, "Enable metamorphic code generation")
+	enableSelfModifying := flag.Bool("self-modifying", true, "Enable self-modifying code generation")
 
 	flag.Parse()
 
@@ -58,6 +59,7 @@ func main() {
 		IndirectCalls:			*indirectCalls,
 		WeaveIntegrity:			*weaveIntegrity,
 		AddMetamorphicCode:		*addMetamorphicCode,
+		EnableSelfModifying:	*enableSelfModifying,
 	}
 
 	fmt.Printf("Starting obfuscation...\n")

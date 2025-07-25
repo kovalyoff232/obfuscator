@@ -125,12 +125,12 @@ func createJunkCases(startID, count int) []ast.Stmt {
 		x, y := NewName(), NewName()
 		var cond ast.Expr
 
-		template := randInt(3)
+		template := randInt(5) // Increased number of templates
 		switch template {
 		case 0:
 			// (x*x + 1) < 0 -- always false
 			cond = &ast.BinaryExpr{
-				X:  &ast.BinaryExpr{
+				X: &ast.BinaryExpr{
 					X:  &ast.BinaryExpr{X: ast.NewIdent(x), Op: token.MUL, Y: ast.NewIdent(x)},
 					Op: token.ADD,
 					Y:  &ast.BasicLit{Kind: token.INT, Value: "1"},
@@ -152,6 +152,32 @@ func createJunkCases(startID, count int) []ast.Stmt {
 					Op: token.SUB,
 					Y:  &ast.BinaryExpr{X: ast.NewIdent(y), Op: token.MUL, Y: ast.NewIdent(y)},
 				},
+			}
+		case 2:
+			// (x ^ y) ^ y != x -- always false
+			cond = &ast.BinaryExpr{
+				X: &ast.ParenExpr{X: &ast.BinaryExpr{
+					X:  &ast.ParenExpr{X: &ast.BinaryExpr{X: ast.NewIdent(x), Op: token.XOR, Y: ast.NewIdent(y)}},
+					Op: token.XOR,
+					Y:  ast.NewIdent(y),
+				}},
+				Op: token.NEQ,
+				Y:  ast.NewIdent(x),
+			}
+		case 3:
+			// 7*x - 3*x - 4*x != 0 -- always false
+			cond = &ast.BinaryExpr{
+				X: &ast.BinaryExpr{
+					X: &ast.BinaryExpr{
+						X:  &ast.BinaryExpr{X: &ast.BasicLit{Kind: token.INT, Value: "7"}, Op: token.MUL, Y: ast.NewIdent(x)},
+						Op: token.SUB,
+						Y:  &ast.BinaryExpr{X: &ast.BasicLit{Kind: token.INT, Value: "3"}, Op: token.MUL, Y: ast.NewIdent(x)},
+					},
+					Op: token.SUB,
+					Y:  &ast.BinaryExpr{X: &ast.BasicLit{Kind: token.INT, Value: "4"}, Op: token.MUL, Y: ast.NewIdent(x)},
+				},
+				Op: token.NEQ,
+				Y:  &ast.BasicLit{Kind: token.INT, Value: "0"},
 			}
 		default:
 			// x*y + 1 == x*y -- always false

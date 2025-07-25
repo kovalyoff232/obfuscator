@@ -118,6 +118,13 @@ func (p *metamorphicPass) Apply(obf *Obfuscator, fset *token.FileSet, file *ast.
 	return nil
 }
 
+type selfModifyingPass struct{}
+
+func (p *selfModifyingPass) Apply(obf *Obfuscator, fset *token.FileSet, file *ast.File) error {
+	pass := &SelfModifyingPass{}
+	return pass.Apply(obf, fset, file)
+}
+
 // --- Configuration and Orchestration ---
 
 type Config struct {
@@ -133,6 +140,7 @@ type Config struct {
 	IndirectCalls        bool
 	WeaveIntegrity       bool
 	AddMetamorphicCode   bool
+	EnableSelfModifying  bool
 }
 
 type Obfuscator struct {
@@ -182,6 +190,9 @@ func NewObfuscator(cfg *Config) *Obfuscator {
 	}
 	if cfg.IndirectCalls {
 		obf.globalPasses = append(obf.globalPasses, &CallIndirectionPass{})
+	}
+	if cfg.EnableSelfModifying {
+		obf.syntaxPasses = append(obf.syntaxPasses, &selfModifyingPass{})
 	}
 	// Integrity weaving must be the absolute last pass.
 	if cfg.WeaveIntegrity {
