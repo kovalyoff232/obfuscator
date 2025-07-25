@@ -23,6 +23,7 @@ func main() {
 	antiVM := flag.Bool("anti-vm", true, "Enable anti-virtual machine checks")
 	indirectCalls := flag.Bool("indirect-calls", true, "Enable call indirection")
 	weaveIntegrity := flag.Bool("weave-integrity", true, "Enable integrity weaving checks")
+	addMetamorphicCode := flag.Bool("metamorphic", true, "Enable metamorphic code generation")
 
 	flag.Parse()
 
@@ -56,6 +57,7 @@ func main() {
 		AntiVM:					*antiVM,
 		IndirectCalls:			*indirectCalls,
 		WeaveIntegrity:			*weaveIntegrity,
+		AddMetamorphicCode:		*addMetamorphicCode,
 	}
 
 	fmt.Printf("Starting obfuscation...\n")

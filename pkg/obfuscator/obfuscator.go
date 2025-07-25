@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/printer"
 	"go/token"
+	"math/rand"
 	"os"
 	"path/filepath"
 
@@ -25,6 +26,34 @@ type GlobalPass interface {
 // TypeAwarePass represents a semantic obfuscation pass that requires type info for the whole package.
 type TypeAwarePass interface {
 	Apply(obf *Obfuscator, pkg *packages.Package) error
+}
+
+// AddMetamorphicCode walks the AST and inserts junk code into function bodies.
+func AddMetamorphicCode(file *ast.File) {
+	engine := &MetamorphicEngine{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		// We only care about function bodies
+		fn, ok := n.(*ast.FuncDecl)
+		if !ok || fn.Body == nil || len(fn.Body.List) == 0 {
+			return true
+		}
+
+		// Don't add junk to tiny functions
+		if len(fn.Body.List) < 2 {
+			return true
+		}
+
+		// Insert junk code at a random position
+		if rand.Intn(100) < 30 { // 30% chance to add junk
+			junk := engine.GenerateJunkCodeBlock()
+			insertionPoint := rand.Intn(len(fn.Body.List))
+
+			// Prepend to avoid issues with slice indexing
+			fn.Body.List = append(fn.Body.List[:insertionPoint], append(junk, fn.Body.List[insertionPoint:]...)...)
+		}
+
+		return true
+	})
 }
 
 // --- Pass Implementations (stubs for type safety) ---
@@ -82,6 +111,13 @@ func (p *antiVMPass) Apply(obf *Obfuscator, fset *token.FileSet, file *ast.File)
 	return pass.Apply(fset, file)
 }
 
+type metamorphicPass struct{}
+
+func (p *metamorphicPass) Apply(obf *Obfuscator, fset *token.FileSet, file *ast.File) error {
+	AddMetamorphicCode(file)
+	return nil
+}
+
 // --- Configuration and Orchestration ---
 
 type Config struct {
@@ -96,6 +132,7 @@ type Config struct {
 	AntiVM               bool
 	IndirectCalls        bool
 	WeaveIntegrity       bool
+	AddMetamorphicCode   bool
 }
 
 type Obfuscator struct {
@@ -136,6 +173,9 @@ func NewObfuscator(cfg *Config) *Obfuscator {
 	}
 	if cfg.InsertDeadCode {
 		obf.syntaxPasses = append(obf.syntaxPasses, &deadCodePass{})
+	}
+	if cfg.AddMetamorphicCode {
+		obf.syntaxPasses = append(obf.syntaxPasses, &metamorphicPass{})
 	}
 	if cfg.ObfuscateControlFlow {
 		obf.typeAwarePasses = append(obf.typeAwarePasses, &controlFlowPass{})
