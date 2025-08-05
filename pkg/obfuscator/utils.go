@@ -1,16 +1,13 @@
 package obfuscator
-
 import (
 	"crypto/rand"
 	"go/ast"
 	"go/token"
 	"math/big"
 )
-
 const (
 	charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 )
-
 // NewName generates a new cryptographically random identifier.
 func NewName() string {
 	b := make([]byte, 10)
@@ -27,7 +24,6 @@ func NewName() string {
 	// We'll start it with a letter to be safe.
 	return "o_" + string(b)
 }
-
 // isVarDeclared checks if a variable with the given name is already declared in the file.
 func isVarDeclared(file *ast.File, varName string) bool {
 	for _, decl := range file.Decls {
@@ -45,7 +41,6 @@ func isVarDeclared(file *ast.File, varName string) bool {
 	}
 	return false
 }
-
 // insertDeclsAfterImports finds the last import declaration and inserts the new
 // declarations right after it.
 func insertDeclsAfterImports(file *ast.File, decls []ast.Decl) {
@@ -55,7 +50,6 @@ func insertDeclsAfterImports(file *ast.File, decls []ast.Decl) {
 			lastImportIndex = i
 		}
 	}
-
 	if lastImportIndex != -1 {
 		// Insert after the last import
 		file.Decls = append(file.Decls[:lastImportIndex+1], append(decls, file.Decls[lastImportIndex+1:]...)...)

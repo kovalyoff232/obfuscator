@@ -1,12 +1,9 @@
 package obfuscator
-
 import (
 	"go/ast"
 	"go/token"
-
 	"golang.org/x/tools/go/ast/astutil"
 )
-
 // InsertDeadCode traverses the AST and injects various patterns of junk code
 // into function bodies to hinder manual analysis.
 func InsertDeadCode(file *ast.File) {
@@ -16,17 +13,14 @@ func InsertDeadCode(file *ast.File) {
 		if !isFunc || funcDecl.Name == nil {
 			return true
 		}
-
 		// Do not insert dead code into init functions
 		if funcDecl.Name.Name == "init" {
 			return true
 		}
-
 		block, ok := cursor.Node().(*ast.BlockStmt)
 		if !ok || len(block.List) == 0 {
 			return true
 		}
-
 		// Check if the parent is a switch statement. We can't add statements directly
 		// to a switch, only case clauses.
 		if parent := cursor.Parent(); parent != nil {
@@ -34,17 +28,14 @@ func InsertDeadCode(file *ast.File) {
 				return true
 			}
 		}
-
 		// Don't insert dead code into tiny blocks.
 		if len(block.List) < 2 {
 			return true
 		}
-
 		// Insert dead code at a random position within the block.
 		if randInt(3) == 0 { // 33% chance to insert code into any given block
 			var junkStmts []ast.Stmt
 			template := randInt(3) // Choose one of the templates
-
 			switch template {
 			case 0:
 				junkStmts = createMathJunk()
@@ -53,18 +44,15 @@ func InsertDeadCode(file *ast.File) {
 			case 2:
 				junkStmts = createAllocationJunk()
 			}
-
 			// Insert the junk statement at a random index.
 			if len(block.List) > 0 {
 				insertIndex := randInt(int64(len(block.List)))
 				block.List = append(block.List[:insertIndex], append(junkStmts, block.List[insertIndex:]...)...)
 			}
 		}
-
 		return true
 	}, nil)
 }
-
 // createMathJunk creates a block of pointless arithmetic operations.
 func createMathJunk() []ast.Stmt {
 	x, y, z := NewName(), NewName(), NewName()
@@ -87,13 +75,11 @@ func createMathJunk() []ast.Stmt {
 		},
 	}
 }
-
 // createOpaquePredicateJunk creates an if statement with a condition that is always true
 // but harder for a static analyzer to prove.
 func createOpaquePredicateJunk() []ast.Stmt {
 	x, y := NewName(), NewName()
 	var cond ast.Expr
-
 	template := randInt(3)
 	switch template {
 	case 0:
@@ -138,7 +124,6 @@ func createOpaquePredicateJunk() []ast.Stmt {
 			Y:  &ast.BasicLit{Kind: token.INT, Value: "0"},
 		}
 	}
-
 	return []ast.Stmt{&ast.IfStmt{
 		Init: &ast.AssignStmt{
 			Lhs: []ast.Expr{ast.NewIdent(x)}, Tok: token.DEFINE,
@@ -159,7 +144,6 @@ func createOpaquePredicateJunk() []ast.Stmt {
 		},
 	}}
 }
-
 // createAllocationJunk creates junk code that allocates memory and then "uses" it.
 func createAllocationJunk() []ast.Stmt {
 	sliceVar := NewName()

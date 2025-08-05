@@ -1,22 +1,18 @@
 package obfuscator
-
 import (
 	"go/ast"
 )
-
 // RenameIdentifiers safely renames local variables and constants.
 // It avoids renaming anything in the global scope, struct fields, or function names,
 // which prevents breaking interface implementations or public APIs.
 func RenameIdentifiers(file *ast.File) {
 	// A map to store the new name for each object to ensure consistency.
 	nameMap := make(map[*ast.Object]string)
-
 	ast.Inspect(file, func(n ast.Node) bool {
 		ident, ok := n.(*ast.Ident)
 		if !ok {
 			return true
 		}
-
 		// We only want to rename declarations of variables and constants.
 		if ident.Obj != nil && ident.Obj.Pos() == ident.Pos() {
 			// Check if it's a variable or constant and it's not exported.
@@ -30,7 +26,6 @@ func RenameIdentifiers(file *ast.File) {
 				}
 			}
 		}
-
 		// If this identifier is a use of a renamed object, apply the new name.
 		if ident.Obj != nil {
 			if newName, ok := nameMap[ident.Obj]; ok {

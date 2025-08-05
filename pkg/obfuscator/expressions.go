@@ -1,13 +1,10 @@
 package obfuscator
-
 import (
 	"go/ast"
 	"go/token"
 	"go/types"
-
 	"golang.org/x/tools/go/ast/astutil"
 )
-
 // ObfuscateExpressions traverses the AST and replaces simple binary expressions
 // with more complex, but functionally equivalent, forms.
 func ObfuscateExpressions(file *ast.File, info *types.Info) {
@@ -17,18 +14,14 @@ func ObfuscateExpressions(file *ast.File, info *types.Info) {
 		if !ok {
 			return true
 		}
-
 		if randInt(2) == 0 {
 			return true
 		}
-
 		if info == nil {
 			return true
 		}
-
 		var newExpr ast.Expr
 		template := randInt(2)
-
 		// Check if it's an integer operation
 		if t, ok := info.TypeOf(binaryExpr.X).(*types.Basic); ok && t.Info()&types.IsInteger != 0 {
 			switch binaryExpr.Op {
@@ -40,7 +33,6 @@ func ObfuscateExpressions(file *ast.File, info *types.Info) {
 				newExpr = obfuscateXor(binaryExpr.X, binaryExpr.Y, int(template))
 			}
 		}
-
 		// Check if it's a boolean operation
 		if t, ok := info.TypeOf(binaryExpr.X).(*types.Basic); ok && t.Info()&types.IsBoolean != 0 {
 			switch binaryExpr.Op {
@@ -50,16 +42,13 @@ func ObfuscateExpressions(file *ast.File, info *types.Info) {
 				newExpr = obfuscateLor(binaryExpr.X, binaryExpr.Y, int(template))
 			}
 		}
-
 		if newExpr != nil {
 			cursor.Replace(newExpr)
 			return false
 		}
-
 		return true
 	}, nil)
 }
-
 func obfuscateAdd(x, y ast.Expr, template int) ast.Expr {
 	switch template {
 	case 0:
@@ -82,7 +71,6 @@ func obfuscateAdd(x, y ast.Expr, template int) ast.Expr {
 		}
 	}
 }
-
 func obfuscateSub(x, y ast.Expr, template int) ast.Expr {
 	switch template {
 	case 0:
@@ -109,7 +97,6 @@ func obfuscateSub(x, y ast.Expr, template int) ast.Expr {
 		}
 	}
 }
-
 func obfuscateXor(x, y ast.Expr, template int) ast.Expr {
 	switch template {
 	case 0:
@@ -128,7 +115,6 @@ func obfuscateXor(x, y ast.Expr, template int) ast.Expr {
 		}
 	}
 }
-
 func obfuscateLand(x, y ast.Expr, template int) ast.Expr {
 	switch template {
 	case 0:
@@ -152,7 +138,6 @@ func obfuscateLand(x, y ast.Expr, template int) ast.Expr {
 		}
 	}
 }
-
 func obfuscateLor(x, y ast.Expr, template int) ast.Expr {
 	switch template {
 	case 0:

@@ -1,5 +1,4 @@
 package main
-
 import (
 	"flag"
 	"fmt"
@@ -7,11 +6,9 @@ import (
 	"os"
 	"path/filepath"
 )
-
 func main() {
 	inputPath := flag.String("input", "", "Path to the source directory or file")
 	outputPath := flag.String("output", "./obfuscated_src", "Path to the output directory for the results")
-	
 	rename := flag.Bool("rename", true, "Enable identifier renaming")
 	encryptStrings := flag.Bool("encrypt-strings", true, "Enable string encryption")
 	insertDeadCode := flag.Bool("insert-dead-code", true, "Enable dead code insertion")
@@ -25,53 +22,64 @@ func main() {
 	weaveIntegrity := flag.Bool("weave-integrity", true, "Enable integrity weaving checks")
 	addMetamorphicCode := flag.Bool("metamorphic", true, "Enable metamorphic code generation")
 	enableSelfModifying := flag.Bool("self-modifying", true, "Enable self-modifying code generation")
-
+	disableAntiVM := flag.Bool("disable-anti-vm", false, "Disable anti-virtual machine checks (can also set OBF_DISABLE_ANTI_VM env)")
 	flag.Parse()
-
 	if *inputPath == "" {
 		fmt.Println("Error: input path is not specified. Use -input flag.")
 		flag.Usage()
 		os.Exit(1)
 	}
-
 	absInput, err := filepath.Abs(*inputPath)
 	if err != nil {
 		fmt.Printf("Error getting absolute path for input: %v\n", err)
 		os.Exit(1)
 	}
-
 	absOutput, err := filepath.Abs(*outputPath)
 	if err != nil {
 		fmt.Printf("Error getting absolute path for output: %v\n", err)
 		os.Exit(1)
 	}
-
-	cfg := &obfuscator.Config{
-		RenameIdentifiers:		*rename,
-		EncryptStrings:			*encryptStrings,
-		InsertDeadCode:			*insertDeadCode,
-		ObfuscateControlFlow:	*obfuscateControlFlow,
-		ObfuscateExpressions:	*obfuscateExpressions,
-		ObfuscateDataFlow:		*obfuscateDataFlow,
-		ObfuscateConstants:		*obfuscateConstants,
-		AntiDebugging:			*antiDebugging,
-		AntiVM:					*antiVM,
-		IndirectCalls:			*indirectCalls,
-		WeaveIntegrity:			*weaveIntegrity,
-		AddMetamorphicCode:		*addMetamorphicCode,
-		EnableSelfModifying:	*enableSelfModifying,
+	// --- Initialize Anti Manager facade (profile=safe, tagsAnti/tagsIntegrity=true by default) ---
+	antiCfg := &obfuscator.AntiConfig{
+		VMThreshold:   1.0,
+		EnableVM:      *antiVM && !*disableAntiVM,
+		EnableDebug:   *antiDebugging,
+		IntegrityMode: "weaving",
+		DebounceMs:    100, // soft deadline aggregation
+		Profile:       "safe",
+		TagsAnti:      true,
+		TagsIntegrity: true,
 	}
-
+	// Real Manager is intentionally nil here to avoid importing internal packages from pkg/.
+	// Upper layers or different entrypoints can inject a concrete implementation if needed.
+	anti := &obfuscator.Anti{
+		Config:  antiCfg,
+		Manager: nil,
+	}
+	cfg := &obfuscator.Config{
+		Anti:                 anti,
+		RenameIdentifiers:    *rename,
+		EncryptStrings:       *encryptStrings,
+		InsertDeadCode:       *insertDeadCode,
+		ObfuscateControlFlow: *obfuscateControlFlow,
+		ObfuscateExpressions: *obfuscateExpressions,
+		ObfuscateDataFlow:    *obfuscateDataFlow,
+		ObfuscateConstants:   *obfuscateConstants,
+		AntiDebugging:        *antiDebugging,
+		AntiVM:               *antiVM && !*disableAntiVM,
+		IndirectCalls:        *indirectCalls,
+		WeaveIntegrity:       *weaveIntegrity,
+		AddMetamorphicCode:   *addMetamorphicCode,
+		EnableSelfModifying:  *enableSelfModifying,
+	}
 	fmt.Printf("Starting obfuscation...\n")
 	fmt.Printf("Source: %s\n", absInput)
 	fmt.Printf("Output: %s\n", absOutput)
 	fmt.Printf("Configuration: %+v\n", cfg)
-
 	err = obfuscator.ProcessDirectory(absInput, absOutput, cfg)
 	if err != nil {
 		fmt.Printf("\nCritical error during obfuscation: %v\n", err)
 		os.Exit(1)
 	}
-
 	fmt.Println("\nObfuscation completed successfully.")
 }

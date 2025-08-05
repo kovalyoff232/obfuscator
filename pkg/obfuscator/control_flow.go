@@ -1,5 +1,4 @@
 package obfuscator
-
 import (
 	"crypto/rand"
 	"fmt"
@@ -9,10 +8,8 @@ import (
 	"go/types"
 	"math/big"
 	"strconv"
-
 	"golang.org/x/tools/go/ast/astutil"
 )
-
 // ControlFlow flattens the control flow of function bodies using a switch-based dispatcher,
 // enhanced with opaque predicates to create junk code paths.
 func ControlFlow(f *ast.File, info *types.Info) {
@@ -21,44 +18,36 @@ func ControlFlow(f *ast.File, info *types.Info) {
 		if !ok || funcDecl.Body == nil || len(funcDecl.Body.List) == 0 {
 			return true
 		}
-
 		if funcDecl.Name.Name == "main" || funcDecl.Name.Name == "init" || len(funcDecl.Body.List) < 3 {
 			return true
 		}
-
 		newBody, err := flattenFunctionBody(funcDecl, info)
 		if err != nil {
 			return true
 		}
-
 		funcDecl.Body = newBody
 		return false
 	}, nil)
 }
-
 type BasicBlock struct {
 	ID    int
 	Stmts []ast.Stmt
 }
-
 type hoistedVar struct {
 	OriginalName string
 	NewName      string
 	Type         ast.Expr
 }
-
 func flattenFunctionBody(fn *ast.FuncDecl, info *types.Info) (*ast.BlockStmt, error) {
 	hoistedVars, hoistedDecls := hoistAndRenameVariables(fn.Body, info)
 	blocks := decomposeToBasicBlocks(fn.Body.List)
 	if len(blocks) <= 1 {
 		return nil, fmt.Errorf("not enough blocks to flatten")
 	}
-
 	stateVar := ast.NewIdent(NewName())
 	exitState := len(blocks)
 	var returnVars []*ast.Ident
 	var returnStmts []ast.Stmt
-
 	if fn.Type.Results != nil {
 		for _, field := range fn.Type.Results.List {
 			retVar := ast.NewIdent(NewName())
@@ -68,7 +57,6 @@ func flattenFunctionBody(fn *ast.FuncDecl, info *types.Info) (*ast.BlockStmt, er
 			})
 		}
 	}
-
 	for i := range blocks {
 		nextState := i + 1
 		if i == len(blocks)-1 {
@@ -76,15 +64,12 @@ func flattenFunctionBody(fn *ast.FuncDecl, info *types.Info) (*ast.BlockStmt, er
 		}
 		blocks[i].Stmts = rewriteBlock(blocks[i].Stmts, stateVar, nextState, exitState, returnVars, hoistedVars)
 	}
-
 	junkCases := createJunkCases(len(blocks), len(blocks)+5)
-
 	// Fisher-Yates shuffle using crypto/rand
 	for i := len(blocks) - 1; i > 0; i-- {
 		j, _ := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
 		blocks[i], blocks[j.Int64()] = blocks[j.Int64()], blocks[i]
 	}
-
 	var cases []ast.Stmt
 	for _, block := range blocks {
 		cases = append(cases, &ast.CaseClause{
@@ -93,7 +78,6 @@ func flattenFunctionBody(fn *ast.FuncDecl, info *types.Info) (*ast.BlockStmt, er
 		})
 	}
 	cases = append(cases, junkCases...)
-
 	newBody := &ast.BlockStmt{}
 	newBody.List = append(newBody.List, hoistedDecls...)
 	newBody.List = append(newBody.List, returnStmts...)
@@ -114,17 +98,14 @@ func flattenFunctionBody(fn *ast.FuncDecl, info *types.Info) (*ast.BlockStmt, er
 	if len(returnVars) > 0 {
 		newBody.List = append(newBody.List, &ast.ReturnStmt{Results: Deref(returnVars)})
 	}
-
 	return newBody, nil
 }
-
 func createJunkCases(startID, count int) []ast.Stmt {
 	var junkCases []ast.Stmt
 	for i := 0; i < count; i++ {
 		junkID := startID + i
 		x, y := NewName(), NewName()
 		var cond ast.Expr
-
 		template := randInt(5) // Increased number of templates
 		switch template {
 		case 0:
@@ -191,7 +172,6 @@ func createJunkCases(startID, count int) []ast.Stmt {
 				Y:  &ast.BinaryExpr{X: ast.NewIdent(x), Op: token.MUL, Y: ast.NewIdent(y)},
 			}
 		}
-
 		junkCases = append(junkCases, &ast.CaseClause{
 			List: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(junkID)}},
 			Body: []ast.Stmt{
@@ -210,11 +190,9 @@ func createJunkCases(startID, count int) []ast.Stmt {
 	}
 	return junkCases
 }
-
 func hoistAndRenameVariables(body *ast.BlockStmt, info *types.Info) (map[string]*hoistedVar, []ast.Stmt) {
 	vars := make(map[string]*hoistedVar)
 	var decls []ast.Stmt
-
 	registerVar := func(ident *ast.Ident) {
 		if _, exists := vars[ident.Name]; !exists {
 			var varType ast.Expr
@@ -228,7 +206,6 @@ func hoistAndRenameVariables(body *ast.BlockStmt, info *types.Info) (map[string]
 			} else {
 				varType = ast.NewIdent("interface{}")
 			}
-
 			newVar := &hoistedVar{
 				OriginalName: ident.Name,
 				NewName:      NewName(),
@@ -245,7 +222,6 @@ func hoistAndRenameVariables(body *ast.BlockStmt, info *types.Info) (map[string]
 			})
 		}
 	}
-
 	astutil.Apply(body, func(cursor *astutil.Cursor) bool {
 		switch n := cursor.Node().(type) {
 		case *ast.GenDecl:
@@ -289,10 +265,8 @@ func hoistAndRenameVariables(body *ast.BlockStmt, info *types.Info) (map[string]
 		}
 		return true
 	}, nil)
-
 	return vars, decls
 }
-
 func decomposeToBasicBlocks(stmts []ast.Stmt) []BasicBlock {
 	var blocks []BasicBlock
 	currentBlock := BasicBlock{ID: 0}
@@ -308,7 +282,6 @@ func decomposeToBasicBlocks(stmts []ast.Stmt) []BasicBlock {
 	}
 	return blocks
 }
-
 func isBlockTerminal(stmt ast.Stmt) bool {
 	switch stmt.(type) {
 	case *ast.ReturnStmt, *ast.IfStmt, *ast.ForStmt, *ast.SwitchStmt, *ast.RangeStmt:
@@ -317,7 +290,6 @@ func isBlockTerminal(stmt ast.Stmt) bool {
 		return false
 	}
 }
-
 func rewriteBlock(stmts []ast.Stmt, stateVar *ast.Ident, nextState, exitState int, returnVars []*ast.Ident, hoistedVars map[string]*hoistedVar) []ast.Stmt {
 	astutil.Apply(&ast.BlockStmt{List: stmts}, func(cursor *astutil.Cursor) bool {
 		ident, ok := cursor.Node().(*ast.Ident)
@@ -328,7 +300,6 @@ func rewriteBlock(stmts []ast.Stmt, stateVar *ast.Ident, nextState, exitState in
 		}
 		return true
 	}, nil)
-
 	lastStmt := stmts[len(stmts)-1]
 	switch s := lastStmt.(type) {
 	case *ast.ReturnStmt:
@@ -342,7 +313,6 @@ func rewriteBlock(stmts []ast.Stmt, stateVar *ast.Ident, nextState, exitState in
 		return append(stmts, &ast.AssignStmt{Lhs: []ast.Expr{stateVar}, Tok: token.ASSIGN, Rhs: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(nextState)}}})
 	}
 }
-
 func Deref(vars []*ast.Ident) []ast.Expr {
 	exprs := make([]ast.Expr, len(vars))
 	for i, v := range vars {

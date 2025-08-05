@@ -1,14 +1,11 @@
 package obfuscator
-
 import (
 	"go/ast"
 	"go/token"
 	"math/rand"
 )
-
 // MetamorphicEngine provides functions to generate varied but functionally equivalent code.
 type MetamorphicEngine struct{}
-
 // GenerateJunkCodeBlock creates a block of random, non-functional "junk" code.
 func (e *MetamorphicEngine) GenerateJunkCodeBlock() []ast.Stmt {
 	// Randomly choose a junk code template
@@ -22,7 +19,6 @@ func (e *MetamorphicEngine) GenerateJunkCodeBlock() []ast.Stmt {
 		return []ast.Stmt{}
 	}
 }
-
 // generateMathJunk creates a block of pointless arithmetic operations.
 func (e *MetamorphicEngine) generateMathJunk() []ast.Stmt {
 	x, y, z := NewName(), NewName(), NewName()
@@ -45,7 +41,6 @@ func (e *MetamorphicEngine) generateMathJunk() []ast.Stmt {
 		},
 	}
 }
-
 // generateOpaquePredicate creates an if statement with a condition that is always true.
 func (e *MetamorphicEngine) generateOpaquePredicate() ast.Stmt {
 	x, y := NewName(), NewName()

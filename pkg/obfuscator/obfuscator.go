@@ -1,5 +1,4 @@
 package obfuscator
-
 import (
 	"bytes"
 	"fmt"
@@ -9,25 +8,20 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
-
 	"golang.org/x/tools/go/packages"
 )
-
 // Pass represents a syntax-only obfuscation pass that runs on a single file.
 type Pass interface {
 	Apply(obf *Obfuscator, fset *token.FileSet, file *ast.File) error
 }
-
 // GlobalPass represents a syntax-only obfuscation pass that needs to run on all files at once.
 type GlobalPass interface {
 	Apply(obf *Obfuscator, fset *token.FileSet, files map[string]*ast.File) error
 }
-
 // TypeAwarePass represents a semantic obfuscation pass that requires type info for the whole package.
 type TypeAwarePass interface {
 	Apply(obf *Obfuscator, pkg *packages.Package) error
 }
-
 // AddMetamorphicCode walks the AST and inserts junk code into function bodies.
 func AddMetamorphicCode(file *ast.File) {
 	engine := &MetamorphicEngine{}
@@ -36,7 +30,6 @@ func AddMetamorphicCode(file *ast.File) {
 		if !ok || fn.Body == nil || len(fn.Body.List) == 0 {
 			return true
 		}
-
 		// Check for goto statements and skip the function if any are found.
 		hasGoto := false
 		ast.Inspect(fn.Body, func(node ast.Node) bool {
@@ -49,92 +42,87 @@ func AddMetamorphicCode(file *ast.File) {
 		if hasGoto {
 			return true
 		}
-
 		if len(fn.Body.List) < 2 {
 			return true
 		}
-
 		if rand.Intn(100) < 30 { // 30% chance to add junk
 			junk := engine.GenerateJunkCodeBlock()
 			insertionPoint := rand.Intn(len(fn.Body.List))
 			fn.Body.List = append(fn.Body.List[:insertionPoint], append(junk, fn.Body.List[insertionPoint:]...)...)
 		}
-
 		return true
 	})
 }
-
 // --- Pass Implementations (stubs for type safety) ---
-
 type renamePass struct{}
-
 func (p *renamePass) Apply(obf *Obfuscator, fset *token.FileSet, file *ast.File) error {
 	RenameIdentifiers(file)
 	return nil
 }
-
 type deadCodePass struct{}
-
 func (p *deadCodePass) Apply(obf *Obfuscator, fset *token.FileSet, file *ast.File) error {
 	InsertDeadCode(file)
 	return nil
 }
-
 type controlFlowPass struct{}
-
 func (p *controlFlowPass) Apply(obf *Obfuscator, pkg *packages.Package) error {
 	for _, file := range pkg.Syntax {
 		ControlFlow(file, pkg.TypesInfo)
 	}
 	return nil
 }
-
 type expressionPass struct{}
-
 func (p *expressionPass) Apply(obf *Obfuscator, pkg *packages.Package) error {
 	for _, file := range pkg.Syntax {
 		ObfuscateExpressions(file, pkg.TypesInfo)
 	}
 	return nil
 }
-
 type constantPass struct{}
-
 func (p *constantPass) Apply(obf *Obfuscator, fset *token.FileSet, file *ast.File) error {
 	ObfuscateConstants(file)
 	return nil
 }
-
 type antiDebugPass struct{}
-
 func (p *antiDebugPass) Apply(obf *Obfuscator, fset *token.FileSet, file *ast.File) error {
 	pass := &AntiDebugPass{}
 	return pass.Apply(obf, fset, file)
 }
-
 type antiVMPass struct{}
-
 func (p *antiVMPass) Apply(obf *Obfuscator, fset *token.FileSet, file *ast.File) error {
 	pass := &AntiVMPass{}
-	return pass.Apply(fset, file)
+	return pass.Apply(obf, fset, file)
 }
-
 type metamorphicPass struct{}
-
 func (p *metamorphicPass) Apply(obf *Obfuscator, fset *token.FileSet, file *ast.File) error {
 	AddMetamorphicCode(file)
 	return nil
 }
-
 type selfModifyingPass struct{}
-
 func (p *selfModifyingPass) Apply(obf *Obfuscator, fset *token.FileSet, file *ast.File) error {
 	pass := &SelfModifyingPass{}
 	return pass.Apply(obf, fset, file)
 }
-
+type AntiConfig struct {
+	VMThreshold   float64
+	EnableVM      bool
+	EnableDebug   bool
+	IntegrityMode string
+	DebounceMs    int64  
+	Profile       string // aggressive|minimal|safe
+	TagsAnti      bool   
+	TagsIntegrity bool   
+}
+type AntiManager interface {
+	CheckVM(ctx interface{}) (float64, []string, error)
+	CheckDebugger(ctx interface{}) (bool, string, error)
+	CheckIntegrity(ctx interface{}) (bool, error)
+}
+type Anti struct {
+	Config  *AntiConfig
+	Manager AntiManager
+}
 // --- Configuration and Orchestration ---
-
 type Config struct {
 	RenameIdentifiers    bool
 	EncryptStrings       bool
@@ -149,8 +137,8 @@ type Config struct {
 	WeaveIntegrity       bool
 	AddMetamorphicCode   bool
 	EnableSelfModifying  bool
+	Anti *Anti
 }
-
 type Obfuscator struct {
 	syntaxPasses      []Pass
 	globalPasses      []GlobalPass
@@ -158,13 +146,13 @@ type Obfuscator struct {
 	WeavingKeyVarName string // Name of the global var for the anti-debug key
 	stringEncryption  *StringEncryptionPass
 	integrityWeaver   *IntegrityWeavingPass
+	anti *Anti
 }
-
 func NewObfuscator(cfg *Config) *Obfuscator {
 	obf := &Obfuscator{
 		WeavingKeyVarName: NewName(),
+		anti:              cfg.Anti,
 	}
-
 	// --- Pass Ordering ---
 	if cfg.AntiDebugging {
 		obf.syntaxPasses = append(obf.syntaxPasses, &antiDebugPass{})
@@ -206,10 +194,8 @@ func NewObfuscator(cfg *Config) *Obfuscator {
 	if cfg.WeaveIntegrity {
 		obf.integrityWeaver = NewIntegrityWeavingPass()
 	}
-
 	return obf
 }
-
 func ProcessDirectory(inputPath, outputPath string, cfg *Config) error {
 	if err := os.RemoveAll(outputPath); err != nil {
 		return fmt.Errorf("failed to clean output directory: %w", err)
@@ -217,14 +203,12 @@ func ProcessDirectory(inputPath, outputPath string, cfg *Config) error {
 	if err := os.MkdirAll(outputPath, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
-
 	obfuscator := NewObfuscator(cfg)
 	fset := token.NewFileSet()
-
 	loadCfg := &packages.Config{
-		Mode:  packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
-		Fset:  fset,
-		Dir:   inputPath,
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
+		Fset: fset,
+		Dir:  inputPath,
 	}
 	pkgs, err := packages.Load(loadCfg, "./...")
 	if err != nil {
@@ -233,36 +217,30 @@ func ProcessDirectory(inputPath, outputPath string, cfg *Config) error {
 	if packages.PrintErrors(pkgs) > 0 {
 		return fmt.Errorf("errors occurred while loading packages")
 	}
-
 	for _, pkg := range pkgs {
 		fmt.Printf("Processing package: %s\n", pkg.PkgPath)
-
 		// Run type-aware passes that operate on the whole package at once.
 		for _, pass := range obfuscator.typeAwarePasses {
 			if err := pass.Apply(obfuscator, pkg); err != nil {
 				return fmt.Errorf("error in type-aware pass for package %s: %w", pkg.Name, err)
 			}
 		}
-
 		// Run syntax-only passes on each file individually.
 		for i, filePath := range pkg.GoFiles {
 			fileNode := pkg.Syntax[i]
 			fmt.Printf("  - File: %s\n", filePath)
-
 			// Special handling for string encryption
 			if obfuscator.stringEncryption != nil {
 				if err := obfuscator.stringEncryption.Apply(obfuscator, fset, fileNode); err != nil {
 					return fmt.Errorf("error in string encryption pass for file %s: %w", filePath, err)
 				}
 			}
-
 			for _, pass := range obfuscator.syntaxPasses {
 				if err := pass.Apply(obfuscator, fset, fileNode); err != nil {
 					return fmt.Errorf("error in syntax pass for file %s: %w", filePath, err)
 				}
 			}
 		}
-
 		// Run global passes that operate on all files at once.
 		fileMap := make(map[string]*ast.File)
 		for i, filePath := range pkg.GoFiles {
@@ -273,7 +251,6 @@ func ProcessDirectory(inputPath, outputPath string, cfg *Config) error {
 				return fmt.Errorf("error in global pass for package %s: %w", pkg.Name, err)
 			}
 		}
-
 		// Run the final integrity weaving pass if enabled.
 		if obfuscator.integrityWeaver != nil {
 			if err := obfuscator.integrityWeaver.Apply(obfuscator, fset, fileMap); err != nil {
@@ -281,7 +258,6 @@ func ProcessDirectory(inputPath, outputPath string, cfg *Config) error {
 			}
 		}
 	}
-
 	// Write all modified files to the output directory.
 	for _, pkg := range pkgs {
 		for i, filePath := range pkg.GoFiles {
@@ -294,17 +270,14 @@ func ProcessDirectory(inputPath, outputPath string, cfg *Config) error {
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 				return err
 			}
-
 			var buf bytes.Buffer
 			if err := printer.Fprint(&buf, fset, fileNode); err != nil {
 				return fmt.Errorf("failed to print AST for %s: %w", filePath, err)
 			}
-
 			if err := os.WriteFile(targetPath, buf.Bytes(), 0644); err != nil {
 				return fmt.Errorf("failed to write output file %s: %w", targetPath, err)
 			}
 		}
 	}
-
 	return nil
 }
