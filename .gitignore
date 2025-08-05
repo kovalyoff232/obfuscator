@@ -27,3 +27,30 @@ kvstore.db
 # OS-specific
 .DS_Store
 Thumbs.db
+
+# build artifacts
+obfuscator_cli
+obfuscated_src/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# go build cache / temp
+bin/
+dist/
+build/
+.coverage/
+*.test
+
+# environment / secrets
+.env
+*.env
+.env.*
+.env.local
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
+improvements.md

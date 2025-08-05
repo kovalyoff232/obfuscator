@@ -3,20 +3,26 @@ package main
 import (
 	"crypto/subtle"
 	"fmt"
+	"os"
 )
 
-const superSecretPassword = "SuperSecretPassword123!"
+func getPassword() []byte {
+	if v := os.Getenv("PAYLOAD_PASSWORD"); v != "" {
+		return []byte(v)
+	}
+	fmt.Println("[warn] PAYLOAD_PASSWORD не задан. Используется пустой пароль (только для демо).")
+	return []byte("")
+}
 
 func checkPassword(userInput string) bool {
-	// Используем ConstantTimeCompare для защиты от атак по времени.
-	// Важно, чтобы срезы байтов имели одинаковую длину.
-	expected := []byte(superSecretPassword)
+	expected := getPassword()
 	input := []byte(userInput)
 
-	// Если длина не совпадает, сравнение заведомо ложно,
-	// но для сохранения постоянного времени мы сравниваем пароль с самим собой.
 	if len(expected) != len(input) {
-		return subtle.ConstantTimeCompare(expected, expected) == 0 // Всегда false
+
+		padded := make([]byte, len(expected))
+		copy(padded, input)
+		return subtle.ConstantTimeCompare(expected, padded) == 1
 	}
 
 	return subtle.ConstantTimeCompare(expected, input) == 1
